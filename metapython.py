@@ -233,7 +233,21 @@ class MetaAnalysisResults:
 
 @dataclass
 class UnifiedMetaConfig:
-    """Unified configuration for all meta-analysis methods"""
+    """Unified configuration for all meta-analysis methods
+    
+    R/metafor parameter mapping:
+    - tau2_method: maps to metafor 'method' parameter (DL, REML, ML, PM, HS, EB)
+    - use_hksj: maps to metafor 'test' parameter ("knha" in metafor)
+    - alpha: maps to metafor 'level' parameter (1-alpha confidence level)
+    - prediction_interval: similar to metafor 'predict()' function
+    - min_studies: similar to metafor minimum k requirement
+    
+    Differences from R/metafor:
+    - Python uses tau2_method string vs metafor's method parameter
+    - HKSJ is boolean here vs "knha" string in metafor  
+    - Additional transport and conflict detection settings not in metafor
+    - Living MA and NLP settings are Metapython extensions
+    """
     # Core settings
     alpha: float = 0.05
     tau2_method: str = 'REML'
@@ -354,7 +368,19 @@ def safe_format(value, format_spec=""):
 # ===================================================================
 
 class TauSquaredEstimators:
-    """Comprehensive tau² estimation methods from PyMeta + CBAMM"""
+    """Comprehensive tau² estimation methods from PyMeta + CBAMM
+    
+    R/metafor compatibility:
+    - dersimonian_laird(): equivalent to metafor method="DL"
+    - restricted_ml(): equivalent to metafor method="REML" 
+    - maximum_likelihood(): equivalent to metafor method="ML"
+    - paule_mandel(): equivalent to metafor method="PM"
+    - hunter_schmidt(): equivalent to metafor method="HS"
+    - empirical_bayes(): equivalent to metafor method="EB"
+    
+    All methods return tau² estimate (scalar) matching metafor output.
+    Differences: Improved numerical stability and edge case handling.
+    """
     
     @staticmethod
     @validate_inputs
