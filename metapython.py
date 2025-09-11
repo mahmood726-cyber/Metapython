@@ -339,6 +339,16 @@ def safe_matrix_inverse(A):
     except np.linalg.LinAlgError:
         return np.linalg.pinv(A)
 
+def safe_format(value, format_spec=""):
+    """Safe formatter to avoid value formatting crashes"""
+    try:
+        if format_spec:
+            return format(value, format_spec)
+        else:
+            return str(value)
+    except (ValueError, TypeError, AttributeError):
+        return str(value)
+
 # ===================================================================
 # ENHANCED TAU² ESTIMATORS
 # ===================================================================
@@ -440,6 +450,94 @@ class TauSquaredEstimators:
             return 0.0
         
         tau2 = max(0, (Q - df) / denominator)
+        return float(tau2)
+    
+    @staticmethod
+    @validate_inputs
+    def maximum_likelihood(effects: np.ndarray, variances: np.ndarray,
+                          max_iter: int = 100, tol: float = 1e-6) -> float:
+        """Maximum Likelihood (ML) estimator for tau²"""
+        if len(effects) < 2:
+            return 0.0
+        
+        # Initialize with DL estimate
+        tau2 = TauSquaredEstimators.dersimonian_laird(effects, variances)
+        
+        for iteration in range(max_iter):
+            # Update weights
+            weights = 1 / (variances + tau2)
+            sum_weights = np.sum(weights)
+            weighted_mean = np.sum(weights * effects) / sum_weights
+            
+            # Calculate Q and its derivative
+            Q = np.sum(weights * (effects - weighted_mean) ** 2)
+            
+            # ML update (simplified Newton-Raphson step)
+            sum_weights_squared = np.sum(weights ** 2)
+            
+            # Gradient and Hessian approximation
+            gradient = -0.5 * np.sum(weights) + 0.5 * Q
+            hessian = 0.5 * sum_weights_squared
+            
+            if hessian <= 0:
+                break
+                
+            tau2_new = max(0, tau2 - gradient / hessian)
+            
+            # Check convergence
+            if abs(tau2_new - tau2) < tol:
+                break
+                
+            tau2 = tau2_new
+        
+        return float(tau2)
+    
+    @staticmethod
+    @validate_inputs
+    def paule_mandel(effects: np.ndarray, variances: np.ndarray,
+                    max_iter: int = 100, tol: float = 1e-6) -> float:
+        """Paule-Mandel (PM) estimator for tau²"""
+        if len(effects) < 2:
+            return 0.0
+        
+        k = len(effects)
+        
+        # Initialize with DL estimate
+        tau2 = TauSquaredEstimators.dersimonian_laird(effects, variances)
+        
+        for iteration in range(max_iter):
+            # Calculate weights
+            weights = 1 / (variances + tau2)
+            sum_weights = np.sum(weights)
+            
+            # Calculate weighted mean
+            weighted_mean = np.sum(weights * effects) / sum_weights
+            
+            # Calculate Q statistic
+            Q = np.sum(weights * (effects - weighted_mean) ** 2)
+            
+            # PM iteration step
+            if Q <= k - 1:
+                tau2_new = 0.0
+            else:
+                # Iterative solution to Paule-Mandel equation
+                sum_weights_inv = np.sum(1 / (variances + tau2))
+                sum_weights_inv_sq = np.sum(1 / (variances + tau2)**2)
+                
+                numerator = Q - (k - 1)
+                denominator = sum_weights_inv - sum_weights_inv_sq / sum_weights_inv
+                
+                if denominator <= 0:
+                    break
+                    
+                tau2_new = max(0, numerator / denominator)
+            
+            # Check convergence
+            if abs(tau2_new - tau2) < tol:
+                break
+                
+            tau2 = tau2_new
+        
         return float(tau2)
 
 # ===================================================================
@@ -929,8 +1027,713 @@ class PubMedIntegration:
         }
 
 # ===================================================================
-# MAIN UNIFIED PYMETA-CBAMM CLASS
+# FORMULA-LIKE INTERFACE (METAFOR-INSPIRED)
 # ===================================================================
+
+def meta_rma(formula: str, method: str = "REML", mods: Optional[List[str]] = None, 
+            data: Optional[pd.DataFrame] = None, weights: str = "inverse-variance") -> Union[Dict[str, Any], 'UnifiedMetaAnalysis']:
+    """
+    Metafor-inspired formula interface for meta-analysis
+    
+    Parameters:
+    -----------
+    formula : str
+        Formula string like "yi ~ x1 + x2" where yi is effect size column
+    method : str, default "REML" 
+        Tau² estimation method: "DL", "REML", "ML", "PM", "HS", "EB"
+    mods : list of str, optional
+        Moderator variables for meta-regression
+    data : pd.DataFrame, optional
+        DataFrame containing the data
+    weights : str, default "inverse-variance"
+        Weighting scheme (currently only "inverse-variance" supported)
+        
+    Returns:
+    --------
+    UnifiedMetaAnalysis or dict with error info
+        Fitted meta-analysis object or error information with graceful fallback
+        
+    Examples:
+    ---------
+    >>> meta_rma("effect_size ~ 1", data=df, method="REML")
+    >>> meta_rma("yi ~ x1 + x2", mods=["x1", "x2"], data=df)
+    """
+    try:
+        # Validate inputs
+        if data is None:
+            return {
+                'success': False,
+                'error': 'Data parameter is required',
+                'guidance': 'Please provide a pandas DataFrame with effect sizes and standard errors'
+            }
+        
+        if not isinstance(data, pd.DataFrame):
+            return {
+                'success': False, 
+                'error': 'Data must be a pandas DataFrame',
+                'guidance': 'Convert your data to pd.DataFrame format'
+            }
+        
+        # Parse formula
+        try:
+            # Simple formula parsing: "outcome ~ predictors"
+            if '~' not in formula:
+                return {
+                    'success': False,
+                    'error': f'Invalid formula syntax: {formula}',
+                    'guidance': 'Use format "yi ~ x1 + x2" or "yi ~ 1" for intercept-only'
+                }
+            
+            parts = formula.split('~')
+            if len(parts) != 2:
+                return {
+                    'success': False,
+                    'error': f'Formula must have exactly one ~ separator: {formula}',
+                    'guidance': 'Use format "yi ~ x1 + x2"'
+                }
+            
+            outcome = parts[0].strip()
+            predictors_str = parts[1].strip()
+            
+            # Check if outcome column exists
+            if outcome not in data.columns:
+                return {
+                    'success': False,
+                    'error': f'Outcome column "{outcome}" not found in data',
+                    'guidance': f'Available columns: {list(data.columns)}'
+                }
+            
+            # Parse predictors
+            if predictors_str == '1':
+                # Intercept-only model (standard meta-analysis)
+                predictors = []
+            else:
+                # Parse moderators: "x1 + x2" -> ["x1", "x2"]
+                predictors = [p.strip() for p in predictors_str.split('+')]
+                predictors = [p for p in predictors if p and p != '1']
+                
+                # Check if predictor columns exist
+                missing_cols = [p for p in predictors if p not in data.columns]
+                if missing_cols:
+                    return {
+                        'success': False,
+                        'error': f'Predictor columns not found: {missing_cols}',
+                        'guidance': f'Available columns: {list(data.columns)}'
+                    }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Formula parsing failed: {str(e)}',
+                'guidance': 'Use simple format like "yi ~ x1 + x2" or "yi ~ 1"'
+            }
+        
+        # Infer standard error column (common naming conventions)
+        se_candidates = ['se', 'sei', 'standard_error', 'std_err', 'stderr']
+        se_col = None
+        for candidate in se_candidates:
+            if candidate in data.columns:
+                se_col = candidate
+                break
+        
+        # Also try variance columns and convert
+        if se_col is None:
+            var_candidates = ['vi', 'var', 'variance']
+            for candidate in var_candidates:
+                if candidate in data.columns:
+                    # Create SE column from variance
+                    data = data.copy()
+                    se_col = 'se_computed'
+                    data[se_col] = np.sqrt(data[candidate])
+                    break
+        
+        if se_col is None:
+            return {
+                'success': False,
+                'error': 'Standard error column not found',
+                'guidance': 'Data should contain column named: se, sei, standard_error, vi, or variance'
+            }
+        
+        # Create study labels if not present
+        if 'study' not in data.columns:
+            data = data.copy()
+            data['study'] = [f'Study_{i+1}' for i in range(len(data))]
+        
+        # Handle moderators
+        if predictors:
+            if not mods:
+                mods = predictors
+            
+            # For Phase 1: Create a TODO note for meta-regression
+            return {
+                'success': False,
+                'error': 'Meta-regression not fully implemented in Phase 1',
+                'guidance': 'TODO: Implement moderator analysis via iterative WLS',
+                'formula': formula,
+                'outcome': outcome,
+                'moderators': predictors,
+                'method': method,
+                'phase': 1
+            }
+        
+        # Standard meta-analysis (intercept-only)
+        try:
+            config = UnifiedMetaConfig(tau2_method=method)
+            
+            # Run random-effects if method != "FE", otherwise fixed-effects
+            if method.upper() == "FE":
+                config.tau2_method = "DL"  # Will be ignored for fixed effects
+            
+            meta = UnifiedMetaAnalysis(
+                data=data,
+                effect_col=outcome,
+                se_col=se_col,
+                label_col='study',
+                config=config,
+                validate_data=True
+            )
+            
+            # Analyze with appropriate settings
+            meta.analyze(include_bias_tests=False, include_conflicts=False)
+            
+            return meta
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Meta-analysis failed: {str(e)}',
+                'guidance': 'Check data format and ensure valid effect sizes and standard errors',
+                'formula': formula,
+                'method': method
+            }
+        
+    except Exception as e:
+        # Graceful fallback for any unexpected errors
+        return {
+            'success': False,
+            'error': f'Unexpected error in meta_rma: {str(e)}',
+            'guidance': 'Please check input format and try again',
+            'formula': formula if 'formula' in locals() else 'unknown'
+        }
+
+# ===================================================================
+# CSV IMPORT/EXPORT HELPERS FOR R COMPATIBILITY
+# ===================================================================
+
+def read_metafor_like_csv(path: str, **kwargs) -> pd.DataFrame:
+    """
+    Read CSV file with metafor-like column expectations
+    
+    Expects common metafor columns: yi, vi, sei, study, and moderators
+    
+    Parameters:
+    -----------
+    path : str
+        Path to CSV file
+    **kwargs : 
+        Additional arguments passed to pd.read_csv()
+        
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with standardized column names for meta-analysis
+        
+    Notes:
+    ------
+    Maps common R/metafor naming conventions to Python conventions:
+    - yi -> effect_size
+    - vi -> variance (and creates se = sqrt(vi) if sei not present)
+    - sei -> standard_error
+    - Preserves study, author, year, and moderator columns
+    """
+    try:
+        # Read CSV with error handling
+        try:
+            data = pd.read_csv(path, **kwargs)
+        except FileNotFoundError:
+            logger.error(f"File not found: {path}")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error reading CSV: {e}")
+            return pd.DataFrame()
+        
+        if data.empty:
+            logger.warning(f"Empty CSV file: {path}")
+            return data
+        
+        # Column mapping for R/metafor compatibility
+        column_mapping = {
+            'yi': 'effect_size',
+            'vi': 'variance', 
+            'sei': 'standard_error',
+            'study': 'study',
+            'author': 'author',
+            'year': 'year'
+        }
+        
+        # Apply column mapping
+        data_renamed = data.copy()
+        for old_name, new_name in column_mapping.items():
+            if old_name in data.columns and new_name != old_name:
+                data_renamed = data_renamed.rename(columns={old_name: new_name})
+        
+        # Handle vi/sei conversion
+        if 'variance' in data_renamed.columns and 'standard_error' not in data_renamed.columns:
+            data_renamed['standard_error'] = np.sqrt(data_renamed['variance'])
+            logger.info("Created standard_error column from variance (vi)")
+        
+        # Validate essential columns
+        required_cols = ['effect_size']
+        missing_required = [col for col in required_cols if col not in data_renamed.columns]
+        
+        if missing_required:
+            logger.error(f"Missing required columns: {missing_required}")
+            logger.info(f"Available columns: {list(data_renamed.columns)}")
+            return pd.DataFrame()
+        
+        # Check for SE or variance
+        if 'standard_error' not in data_renamed.columns and 'variance' not in data_renamed.columns:
+            logger.error("Missing standard error information: need 'sei', 'vi', 'standard_error', or 'variance' column")
+            return pd.DataFrame()
+        
+        # Create study labels if missing
+        if 'study' not in data_renamed.columns:
+            data_renamed['study'] = [f'Study_{i+1}' for i in range(len(data_renamed))]
+            logger.info("Created study labels")
+        
+        logger.info(f"Successfully read {len(data_renamed)} studies from {path}")
+        return data_renamed
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in read_metafor_like_csv: {e}")
+        return pd.DataFrame()
+
+def export_metafor_like_csv(meta: 'UnifiedMetaAnalysis', path: str, 
+                           include_diagnostics: bool = True) -> bool:
+    """
+    Export meta-analysis results to CSV in metafor-compatible format
+    
+    Parameters:
+    -----------
+    meta : UnifiedMetaAnalysis
+        Fitted meta-analysis object
+    path : str
+        Output CSV file path
+    include_diagnostics : bool, default True
+        Whether to include diagnostic statistics
+        
+    Returns:
+    --------
+    bool
+        True if export successful, False otherwise
+        
+    Notes:
+    ------
+    Creates CSV with R/metafor naming conventions:
+    - effect_size -> yi
+    - standard_error -> sei  
+    - variance -> vi
+    - Includes pooled results and per-study diagnostics
+    """
+    try:
+        if not meta._fitted:
+            logger.error("Meta-analysis not fitted. Call analyze() first.")
+            return False
+        
+        # Start with original data
+        export_data = meta.df.copy()
+        
+        # Add R/metafor compatible column names
+        if meta.effect_col in export_data.columns:
+            export_data['yi'] = export_data[meta.effect_col]
+        
+        if meta.se_col in export_data.columns:
+            export_data['sei'] = export_data[meta.se_col]
+            export_data['vi'] = export_data[meta.se_col] ** 2
+        
+        # Add weights
+        if '_weight' in export_data.columns:
+            export_data['weights'] = export_data['_weight']
+        
+        # Add residuals and fitted values if available
+        if include_diagnostics and meta._fitted:
+            try:
+                # Calculate standardized residuals
+                effects = export_data[meta.effect_col].values
+                
+                if hasattr(meta.results, 'random_effects'):
+                    pooled_effect = meta.results.random_effects.effect
+                    residuals = effects - pooled_effect
+                    export_data['residuals'] = residuals
+                    
+                    # Standardized residuals
+                    if hasattr(meta.results, 'random_effects') and meta.results.random_effects.tau2 > 0:
+                        se_vals = export_data[meta.se_col].values
+                        tau2 = meta.results.random_effects.tau2
+                        std_residuals = residuals / np.sqrt(se_vals**2 + tau2)
+                        export_data['std_residuals'] = std_residuals
+                
+                # Add influence diagnostics if available
+                try:
+                    influence_data = meta.influence_diagnostics()
+                    if not influence_data.empty and len(influence_data) == len(export_data):
+                        export_data['hat_values'] = influence_data.get('hat_value', np.nan)
+                        export_data['cooks_d'] = influence_data.get('cooks_d', np.nan)
+                        export_data['dfbetas'] = influence_data.get('dfbetas', np.nan)
+                except:
+                    logger.warning("Could not add influence diagnostics to export")
+                    
+            except Exception as e:
+                logger.warning(f"Could not add diagnostics to export: {e}")
+        
+        # Add summary row with pooled results
+        if hasattr(meta.results, 'random_effects'):
+            summary_row = {
+                'study': 'POOLED_RANDOM',
+                'yi': meta.results.random_effects.effect,
+                'sei': meta.results.random_effects.se,
+                'vi': meta.results.random_effects.se ** 2,
+                'ci_lower': meta.results.random_effects.ci_low,
+                'ci_upper': meta.results.random_effects.ci_high,
+                'tau2': meta.results.random_effects.tau2,
+                'method': meta.config.tau2_method
+            }
+            
+            summary_df = pd.DataFrame([summary_row])
+            export_data = pd.concat([export_data, summary_df], ignore_index=True)
+        
+        if hasattr(meta.results, 'fixed_effects'):
+            fixed_summary = {
+                'study': 'POOLED_FIXED',
+                'yi': meta.results.fixed_effects.effect,
+                'sei': meta.results.fixed_effects.se,
+                'vi': meta.results.fixed_effects.se ** 2,
+                'ci_lower': meta.results.fixed_effects.ci_low,
+                'ci_upper': meta.results.fixed_effects.ci_high,
+                'tau2': 0.0,
+                'method': 'FIXED'
+            }
+            
+            fixed_df = pd.DataFrame([fixed_summary])
+            export_data = pd.concat([export_data, fixed_df], ignore_index=True)
+        
+        # Write to CSV
+        export_data.to_csv(path, index=False)
+        logger.info(f"Meta-analysis results exported to {path}")
+        logger.info(f"Exported {len(export_data)} rows (including pooled results)")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        return False
+
+# ===================================================================
+# SELECTION MODEL STUBS
+# ===================================================================
+
+def selection_model_vevea_hedges(effects: np.ndarray, se: np.ndarray, 
+                                cutpoints: Optional[List[float]] = None) -> Dict[str, Any]:
+    """
+    Vevea-Hedges selection model stub with graceful fallback
+    
+    Parameters:
+    -----------
+    effects : array-like
+        Effect sizes
+    se : array-like  
+        Standard errors
+    cutpoints : list of float, optional
+        P-value cutpoints for selection model
+        
+    Returns:
+    --------
+    dict
+        Informative message about availability with guidance
+        
+    Notes:
+    -----
+    This is a Phase 1 stub. Full implementation requires specialized
+    optimization routines and will be added in subsequent phases.
+    """
+    try:
+        if cutpoints is None:
+            cutpoints = [0.025, 0.05, 0.10]
+        
+        n_studies = len(effects)
+        
+        # Check if we have sufficient optional dependencies
+        if not HAS_STATSMODELS:
+            return {
+                'available': False,
+                'method': 'Vevea-Hedges Selection Model',
+                'reason': 'Statsmodels not available',
+                'guidance': 'Install statsmodels for selection models: pip install statsmodels',
+                'n_studies': n_studies,
+                'phase': 1
+            }
+        
+        # For Phase 1, return informative stub
+        return {
+            'available': False,
+            'method': 'Vevea-Hedges Selection Model',
+            'reason': 'Not fully implemented in Phase 1',
+            'guidance': 'Selection models require specialized optimization. Will be added in Phase 2.',
+            'n_studies': n_studies,
+            'cutpoints': cutpoints,
+            'todo': 'Implement maximum likelihood estimation with selection weights',
+            'phase': 1,
+            'alternative_methods': [
+                'Use trim-and-fill for publication bias adjustment',
+                'Use PET-PEESE for bias correction', 
+                'Use weight-function models (basic implementation available)'
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            'available': False,
+            'error': f'Selection model stub failed: {str(e)}',
+            'guidance': 'Please check input data format',
+            'phase': 1
+        }
+
+# ===================================================================
+# NETWORK META-ANALYSIS STUB
+# ===================================================================
+
+class NetMetaStub:
+    """
+    Network Meta-Analysis groundwork and data validation stub
+    
+    This provides basic scaffolding for network meta-analysis with:
+    - Data schema validation
+    - Multi-arm trial expansion
+    - Placeholder for consistency models
+    
+    Full implementation will be added in subsequent phases.
+    """
+    
+    def __init__(self):
+        self.treatments = []
+        self.studies = []
+        self.contrasts = pd.DataFrame()
+        self.validated = False
+    
+    def validate_network_data(self, data: pd.DataFrame, 
+                             study_col: str = 'study',
+                             treatment_col: str = 'treatment', 
+                             effect_col: str = 'effect',
+                             se_col: str = 'se') -> Dict[str, Any]:
+        """
+        Validate data schema for network meta-analysis
+        
+        Parameters:
+        -----------
+        data : pd.DataFrame
+            Network data with study-treatment-effect structure
+        study_col : str
+            Column name for study identifier
+        treatment_col : str
+            Column name for treatment identifier
+        effect_col : str
+            Column name for effect sizes
+        se_col : str
+            Column name for standard errors
+            
+        Returns:
+        --------
+        dict
+            Validation results and network summary
+        """
+        try:
+            # Check required columns
+            required_cols = [study_col, treatment_col, effect_col, se_col]
+            missing_cols = [col for col in required_cols if col not in data.columns]
+            
+            if missing_cols:
+                return {
+                    'valid': False,
+                    'error': f'Missing required columns: {missing_cols}',
+                    'required_columns': required_cols,
+                    'available_columns': list(data.columns)
+                }
+            
+            # Basic network structure validation
+            self.studies = data[study_col].unique().tolist()
+            self.treatments = data[treatment_col].unique().tolist()
+            
+            n_studies = len(self.studies)
+            n_treatments = len(self.treatments)
+            
+            # Check for multi-arm studies
+            arms_per_study = data.groupby(study_col)[treatment_col].nunique()
+            multi_arm_studies = arms_per_study[arms_per_study > 2].index.tolist()
+            
+            # Check for disconnected network (basic connectivity)
+            treatment_pairs = set()
+            for study in self.studies:
+                study_treatments = data[data[study_col] == study][treatment_col].tolist()
+                for i, t1 in enumerate(study_treatments):
+                    for t2 in study_treatments[i+1:]:
+                        treatment_pairs.add(tuple(sorted([t1, t2])))
+            
+            # Basic connectivity check (simplified)
+            connected = len(treatment_pairs) >= n_treatments - 1
+            
+            validation_result = {
+                'valid': True,
+                'n_studies': n_studies,
+                'n_treatments': n_treatments,
+                'treatments': self.treatments,
+                'n_comparisons': len(treatment_pairs),
+                'multi_arm_studies': multi_arm_studies,
+                'n_multi_arm': len(multi_arm_studies),
+                'connected': connected,
+                'data_shape': data.shape
+            }
+            
+            if not connected:
+                validation_result['warning'] = 'Network may be disconnected - check treatment connectivity'
+            
+            self.validated = True
+            return validation_result
+            
+        except Exception as e:
+            return {
+                'valid': False,
+                'error': f'Validation failed: {str(e)}',
+                'guidance': 'Check data format and column names'
+            }
+    
+    def expand_multi_arm_contrasts(self, data: pd.DataFrame,
+                                  study_col: str = 'study',
+                                  treatment_col: str = 'treatment',
+                                  effect_col: str = 'effect',
+                                  se_col: str = 'se',
+                                  reference_treatment: Optional[str] = None) -> pd.DataFrame:
+        """
+        Expand multi-arm trials to pairwise contrasts
+        
+        Parameters:
+        -----------
+        data : pd.DataFrame
+            Network data
+        study_col, treatment_col, effect_col, se_col : str
+            Column names
+        reference_treatment : str, optional
+            Reference treatment for contrasts
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Expanded pairwise contrasts
+        """
+        try:
+            if not self.validated:
+                validation = self.validate_network_data(data, study_col, treatment_col, effect_col, se_col)
+                if not validation['valid']:
+                    logger.error("Data validation failed")
+                    return pd.DataFrame()
+            
+            expanded_contrasts = []
+            
+            for study in self.studies:
+                study_data = data[data[study_col] == study].copy()
+                study_treatments = study_data[treatment_col].tolist()
+                
+                if len(study_treatments) <= 2:
+                    # Direct pairwise comparison
+                    if len(study_treatments) == 2:
+                        t1, t2 = study_treatments
+                        effect_diff = study_data[study_data[treatment_col] == t1][effect_col].iloc[0] - \
+                                     study_data[study_data[treatment_col] == t2][effect_col].iloc[0]
+                        
+                        # Combine standard errors (simplified)
+                        se1 = study_data[study_data[treatment_col] == t1][se_col].iloc[0]
+                        se2 = study_data[study_data[treatment_col] == t2][se_col].iloc[0]
+                        combined_se = np.sqrt(se1**2 + se2**2)
+                        
+                        expanded_contrasts.append({
+                            study_col: study,
+                            'treatment_1': t1,
+                            'treatment_2': t2,
+                            'effect_diff': effect_diff,
+                            'se_diff': combined_se,
+                            'contrast_type': 'direct'
+                        })
+                else:
+                    # Multi-arm trial - create all pairwise contrasts
+                    if reference_treatment and reference_treatment in study_treatments:
+                        ref_treatment = reference_treatment
+                    else:
+                        ref_treatment = study_treatments[0]  # Use first as reference
+                    
+                    ref_effect = study_data[study_data[treatment_col] == ref_treatment][effect_col].iloc[0]
+                    ref_se = study_data[study_data[treatment_col] == ref_treatment][se_col].iloc[0]
+                    
+                    for treatment in study_treatments:
+                        if treatment != ref_treatment:
+                            treat_effect = study_data[study_data[treatment_col] == treatment][effect_col].iloc[0]
+                            treat_se = study_data[study_data[treatment_col] == treatment][se_col].iloc[0]
+                            
+                            effect_diff = treat_effect - ref_effect
+                            combined_se = np.sqrt(treat_se**2 + ref_se**2)
+                            
+                            expanded_contrasts.append({
+                                study_col: study,
+                                'treatment_1': treatment,
+                                'treatment_2': ref_treatment,
+                                'effect_diff': effect_diff,
+                                'se_diff': combined_se,
+                                'contrast_type': 'multi_arm_expanded'
+                            })
+            
+            self.contrasts = pd.DataFrame(expanded_contrasts)
+            logger.info(f"Expanded {len(expanded_contrasts)} pairwise contrasts from {len(self.studies)} studies")
+            
+            return self.contrasts
+            
+        except Exception as e:
+            logger.error(f"Multi-arm expansion failed: {e}")
+            return pd.DataFrame()
+    
+    def network_meta_stub(self, consistency_model: str = "random_walk") -> Dict[str, Any]:
+        """
+        Placeholder for network meta-analysis consistency models
+        
+        Parameters:
+        -----------
+        consistency_model : str
+            Type of consistency model (placeholder)
+            
+        Returns:
+        --------
+        dict
+            Informative message about future implementation
+        """
+        return {
+            'available': False,
+            'method': f'Network Meta-Analysis ({consistency_model})',
+            'reason': 'Not implemented in Phase 1',
+            'guidance': 'Full network meta-analysis will be added in subsequent phases',
+            'todo': [
+                'Implement consistency models (fixed/random effects)',
+                'Add inconsistency assessment (node-splitting)',
+                'Add ranking methods (SUCRA)',
+                'Add network plotting',
+                'Add graph-based methods'
+            ],
+            'current_capabilities': [
+                'Data validation for network structure',
+                'Multi-arm trial expansion to pairwise contrasts',
+                'Basic connectivity checking'
+            ],
+            'validated_data': self.validated,
+            'n_treatments': len(self.treatments) if self.treatments else 0,
+            'n_studies': len(self.studies) if self.studies else 0,
+            'phase': 1
+        }
 
 class UnifiedMetaAnalysis:
     """
@@ -1078,6 +1881,10 @@ class UnifiedMetaAnalysis:
             tau2 = TauSquaredEstimators.dersimonian_laird(effects, variances)
         elif self.config.tau2_method == 'REML':
             tau2 = TauSquaredEstimators.restricted_ml(effects, variances)
+        elif self.config.tau2_method == 'ML':
+            tau2 = TauSquaredEstimators.maximum_likelihood(effects, variances)
+        elif self.config.tau2_method == 'PM':
+            tau2 = TauSquaredEstimators.paule_mandel(effects, variances)
         elif self.config.tau2_method == 'HS':
             tau2 = TauSquaredEstimators.hunter_schmidt(effects, variances)
         elif self.config.tau2_method == 'EB':
@@ -3762,6 +4569,12 @@ __all__ = [
     'EnhancedTrialSequentialAnalysis',
     'EnhancedGRADE',
     'PerformanceOptimization',
+    'NetMetaStub',
+    'meta_rma',
+    'read_metafor_like_csv',
+    'export_metafor_like_csv',
+    'selection_model_vevea_hedges',
+    'safe_format',
     'quick_meta',
     'meta_from_summary_stats',
     'run_unified_demo'
