@@ -1449,6 +1449,201 @@ class UnifiedMetaAnalysis:
         })()
     
     # ===================================================================
+    # META-REGRESSION ANALYSIS
+    # ===================================================================
+    
+    def meta_regression(self, moderator_cols: List[str]) -> Dict[str, Any]:
+        """
+        Fixed-effects meta-regression with moderators using weighted least squares.
+        
+        Args:
+            moderator_cols: List of column names in self.df to use as moderators
+            
+        Returns:
+            Dict containing coefficients, standard errors, p-values, and model fit diagnostics
+        """
+        if not self._fitted:
+            self.analyze()
+        
+        # Check if moderator columns exist
+        missing_cols = [col for col in moderator_cols if col not in self.df.columns]
+        if missing_cols:
+            raise ValueError(f"Moderator columns not found in data: {missing_cols}")
+        
+        # Check minimum number of studies
+        if len(self.df) < len(moderator_cols) + 2:
+            raise ValueError(f"Insufficient studies for meta-regression. Need at least {len(moderator_cols) + 2} studies for {len(moderator_cols)} moderators.")
+        
+        # Extract data
+        effects = self.df[self.effect_col].values
+        variances = self.df['_variance'].values
+        weights = 1 / variances
+        
+        # Prepare moderator matrix
+        X = self.df[moderator_cols].copy()
+        
+        # Handle categorical variables by dummy coding
+        X_processed = pd.get_dummies(X, drop_first=True)
+        
+        # Add intercept
+        X_processed.insert(0, 'intercept', 1.0)
+        
+        # Check for multicollinearity (basic check)
+        if X_processed.shape[1] > X_processed.shape[0]:
+            raise ValueError("More predictors than studies - perfect multicollinearity")
+        
+        # Meta-regression using weighted least squares
+        results = {}
+        
+        if HAS_STATSMODELS:
+            try:
+                # Use statsmodels WLS
+                import statsmodels.api as sm
+                model = sm.WLS(effects, X_processed, weights=weights).fit()
+                
+                # Extract results
+                results = {
+                    'success': True,
+                    'method': 'statsmodels_WLS',
+                    'coefficients': dict(zip(X_processed.columns, model.params)),
+                    'standard_errors': dict(zip(X_processed.columns, model.bse)),
+                    'p_values': dict(zip(X_processed.columns, model.pvalues)),
+                    'confidence_intervals': {col: [model.conf_int().loc[col, 0], model.conf_int().loc[col, 1]] 
+                                           for col in X_processed.columns},
+                    'r_squared': model.rsquared,
+                    'adjusted_r_squared': model.rsquared_adj,
+                    'residual_sum_squares': model.ssr,
+                    'model_f_statistic': model.fvalue,
+                    'model_f_pvalue': model.f_pvalue,
+                    'residual_df': model.df_resid,
+                    'n_studies': len(effects),
+                    'n_moderators': len(moderator_cols),
+                    'moderator_names': moderator_cols,
+                    'fitted_values': model.fittedvalues,
+                    'residuals': model.resid,
+                    'weights_used': weights
+                }
+                
+                # Test for residual heterogeneity (Q_E)
+                Q_residual = np.sum(weights * (model.resid ** 2))
+                df_residual = len(effects) - X_processed.shape[1]
+                Q_residual_pval = 1 - chi2.cdf(Q_residual, df_residual) if df_residual > 0 else 1.0
+                
+                results.update({
+                    'residual_Q': Q_residual,
+                    'residual_Q_df': df_residual,
+                    'residual_Q_pvalue': Q_residual_pval,
+                    'significant_residual_heterogeneity': Q_residual_pval < 0.05
+                })
+                
+                # Test for moderators (Q_M)
+                Q_model = model.ess
+                df_model = X_processed.shape[1] - 1  # Exclude intercept
+                Q_model_pval = 1 - chi2.cdf(Q_model, df_model) if df_model > 0 else 1.0
+                
+                results.update({
+                    'model_Q': Q_model,
+                    'model_Q_df': df_model,
+                    'model_Q_pvalue': Q_model_pval,
+                    'significant_moderators': Q_model_pval < 0.05
+                })
+                
+            except Exception as e:
+                logger.warning(f"Statsmodels meta-regression failed: {e}")
+                results = {'success': False, 'error': str(e), 'method': 'statsmodels_WLS'}
+        
+        # Fallback to manual calculation if statsmodels unavailable or failed
+        if not results.get('success', False):
+            try:
+                # Manual weighted least squares
+                X_matrix = X_processed.values
+                W = np.diag(weights)
+                
+                # WLS solution: beta = (X'WX)^-1 X'Wy
+                XtWX = X_matrix.T @ W @ X_matrix
+                XtWy = X_matrix.T @ W @ effects
+                
+                # Check for singularity
+                if np.linalg.det(XtWX) == 0:
+                    raise ValueError("Singular matrix - perfect multicollinearity detected")
+                
+                beta = safe_solve(XtWX, XtWy)
+                
+                # Calculate standard errors
+                fitted = X_matrix @ beta
+                residuals = effects - fitted
+                
+                # Residual sum of squares
+                RSS = np.sum(weights * residuals**2)
+                df_resid = len(effects) - X_matrix.shape[1]
+                
+                # Variance-covariance matrix
+                if df_resid > 0:
+                    var_cov = safe_matrix_inverse(XtWX) * (RSS / df_resid)
+                else:
+                    var_cov = safe_matrix_inverse(XtWX)
+                
+                standard_errors = np.sqrt(np.diag(var_cov))
+                
+                # T-statistics and p-values
+                t_stats = beta / standard_errors
+                p_values = 2 * (1 - t.cdf(np.abs(t_stats), df_resid)) if df_resid > 0 else np.ones_like(t_stats)
+                
+                # Confidence intervals
+                if df_resid > 0:
+                    t_crit = t.ppf(0.975, df_resid)
+                else:
+                    t_crit = 1.96
+                
+                ci_lower = beta - t_crit * standard_errors
+                ci_upper = beta + t_crit * standard_errors
+                
+                # R-squared (proportion of variance explained)
+                total_var = np.sum(weights * (effects - np.mean(effects))**2)
+                r_squared = 1 - RSS / total_var if total_var > 0 else 0
+                
+                results = {
+                    'success': True,
+                    'method': 'manual_WLS',
+                    'coefficients': dict(zip(X_processed.columns, beta)),
+                    'standard_errors': dict(zip(X_processed.columns, standard_errors)),
+                    'p_values': dict(zip(X_processed.columns, p_values)),
+                    'confidence_intervals': {col: [ci_lower[i], ci_upper[i]] 
+                                           for i, col in enumerate(X_processed.columns)},
+                    'r_squared': r_squared,
+                    'residual_sum_squares': RSS,
+                    'residual_df': df_resid,
+                    'n_studies': len(effects),
+                    'n_moderators': len(moderator_cols),
+                    'moderator_names': moderator_cols,
+                    'fitted_values': fitted,
+                    'residuals': residuals,
+                    'weights_used': weights,
+                    'residual_Q': RSS,
+                    'residual_Q_df': df_resid,
+                    'residual_Q_pvalue': 1 - chi2.cdf(RSS, df_resid) if df_resid > 0 else 1.0
+                }
+                
+            except Exception as e:
+                logger.error(f"Manual meta-regression failed: {e}")
+                results = {
+                    'success': False, 
+                    'error': str(e), 
+                    'method': 'manual_WLS',
+                    'moderator_names': moderator_cols
+                }
+        
+        # Store results
+        if not hasattr(self.results, 'meta_regression'):
+            self.results.meta_regression = results
+        else:
+            # If multiple meta-regressions, store as list
+            if not isinstance(self.results.meta_regression, list):
+                self.results.meta_regression = [self.results.meta_regression]
+            self.results.meta_regression.append(results)
+        
+        return results
+    # ===================================================================
     # MISSING STUDY SENSITIVITY (FROM CBAMM)
     # ===================================================================
     
@@ -2207,14 +2402,14 @@ class UnifiedMetaAnalysis:
                 if pet_peese.get('success', True):
                     ax.axvline(pet_peese['corrected_effect'], color='green', 
                              linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                             label=f'PET-PEESE = {fmt_num(pet_peese["corrected_effect"])}')
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
                 if trim_fill['n_imputed'] > 0:
                     ax.axvline(trim_fill['adjusted_effect'], color='orange', 
                              linestyle='-.', linewidth=2,
-                             label=f'Trim-fill = {trim_fill["adjusted_effect"]:.3f}')
+                             label=f'Trim-fill = {fmt_num(trim_fill["adjusted_effect"])}')
         
         ax.set_xlabel('Effect Size', fontsize=12)
         ax.set_ylabel('Standard Error', fontsize=12)
@@ -2268,6 +2463,165 @@ class UnifiedMetaAnalysis:
         ax2.grid(True, alpha=0.3)
         
         return {'influence_plot': fig1, 'cumulative_plot': fig2}
+    
+    def create_gosh_plot(self, n_samples: int = 1000, estimator: str = 'DL', 
+                        figsize: Tuple[int, int] = (10, 8)) -> Any:
+        """
+        Create GOSH plot (Graphic Display of Heterogeneity) using sampling-based approach.
+        
+        Args:
+            n_samples: Number of study subsets to sample
+            estimator: Tau² estimator to use ('DL', 'REML', 'HS', 'EB')
+            figsize: Figure size tuple
+            
+        Returns:
+            matplotlib.figure.Figure: GOSH plot showing heterogeneity patterns
+        """
+        if not self._fitted:
+            self.analyze()
+        
+        effects = self.df[self.effect_col].values
+        variances = self.df['_variance'].values
+        k = len(effects)
+        
+        if k < 4:
+            raise ValueError("GOSH plot requires at least 4 studies")
+        
+        # Storage for GOSH results
+        gosh_effects = []
+        gosh_i2_values = []
+        gosh_tau2_values = []
+        gosh_subset_sizes = []
+        
+        # Generate random subsets
+        np.random.seed(42)  # For reproducibility
+        
+        for _ in range(n_samples):
+            # Random subset size (at least 3, at most k-1)
+            subset_size = np.random.randint(3, k)
+            
+            # Random sample of studies
+            subset_indices = np.random.choice(k, subset_size, replace=False)
+            subset_effects = effects[subset_indices]
+            subset_variances = variances[subset_indices]
+            
+            try:
+                # Calculate pooled effect using specified estimator
+                if estimator == 'DL':
+                    tau2 = TauSquaredEstimators.dersimonian_laird(subset_effects, subset_variances)
+                elif estimator == 'REML':
+                    tau2 = TauSquaredEstimators.restricted_ml(subset_effects, subset_variances)
+                elif estimator == 'HS':
+                    tau2 = TauSquaredEstimators.hunter_schmidt(subset_effects, subset_variances)
+                elif estimator == 'EB':
+                    tau2 = TauSquaredEstimators.empirical_bayes(subset_effects, subset_variances)
+                else:
+                    logger.warning(f"Unknown estimator {estimator}, using DL")
+                    tau2 = TauSquaredEstimators.dersimonian_laird(subset_effects, subset_variances)
+                
+                # Random effects pooled estimate
+                re_weights = 1 / (subset_variances + tau2)
+                pooled_effect = np.sum(re_weights * subset_effects) / np.sum(re_weights)
+                
+                # Calculate I² for this subset
+                fe_weights = 1 / subset_variances
+                fe_pooled = np.sum(fe_weights * subset_effects) / np.sum(fe_weights)
+                Q = np.sum(fe_weights * (subset_effects - fe_pooled) ** 2)
+                df = subset_size - 1
+                I2 = max(0, ((Q - df) / Q) * 100) if Q > 0 else 0
+                
+                # Store results
+                gosh_effects.append(pooled_effect)
+                gosh_i2_values.append(I2)
+                gosh_tau2_values.append(tau2)
+                gosh_subset_sizes.append(subset_size)
+                
+            except Exception as e:
+                # Skip problematic subsets
+                continue
+        
+        if len(gosh_effects) == 0:
+            raise ValueError("No valid subsets generated for GOSH plot")
+        
+        # Create GOSH plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # GOSH plot: Effect vs I²
+        scatter1 = ax1.scatter(gosh_effects, gosh_i2_values, 
+                             c=gosh_subset_sizes, cmap='viridis', 
+                             alpha=0.6, s=30, edgecolors='black', linewidths=0.3)
+        
+        # Add overall estimate
+        overall_effect = self.results.random_effects.effect
+        overall_I2 = self.results.heterogeneity.I2
+        ax1.scatter([overall_effect], [overall_I2], 
+                   s=100, c='red', marker='*', 
+                   edgecolors='black', linewidths=1, 
+                   label='Overall estimate', zorder=5)
+        
+        ax1.set_xlabel('Pooled Effect Size', fontsize=12)
+        ax1.set_ylabel('I² (%)', fontsize=12)
+        ax1.set_title(f'GOSH Plot: Effect vs I² ({estimator} estimator)', fontsize=14, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Color bar for subset sizes
+        cbar1 = plt.colorbar(scatter1, ax=ax1)
+        cbar1.set_label('Subset Size', fontsize=10)
+        
+        # Alternative GOSH plot: Effect vs tau²
+        scatter2 = ax2.scatter(gosh_effects, gosh_tau2_values, 
+                             c=gosh_subset_sizes, cmap='viridis', 
+                             alpha=0.6, s=30, edgecolors='black', linewidths=0.3)
+        
+        # Add overall estimate
+        overall_tau2 = self.results.random_effects.tau2
+        ax2.scatter([overall_effect], [overall_tau2], 
+                   s=100, c='red', marker='*', 
+                   edgecolors='black', linewidths=1, 
+                   label='Overall estimate', zorder=5)
+        
+        ax2.set_xlabel('Pooled Effect Size', fontsize=12)
+        ax2.set_ylabel('τ²', fontsize=12)
+        ax2.set_title(f'GOSH Plot: Effect vs τ² ({estimator} estimator)', fontsize=14, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Color bar for subset sizes
+        cbar2 = plt.colorbar(scatter2, ax=ax2)
+        cbar2.set_label('Subset Size', fontsize=10)
+        
+        plt.tight_layout()
+        
+        # Store GOSH results for further analysis
+        gosh_results = {
+            'effects': gosh_effects,
+            'i2_values': gosh_i2_values,
+            'tau2_values': gosh_tau2_values,
+            'subset_sizes': gosh_subset_sizes,
+            'estimator': estimator,
+            'n_samples': len(gosh_effects),
+            'overall_effect': overall_effect,
+            'overall_I2': overall_I2,
+            'overall_tau2': overall_tau2
+        }
+        
+        # Basic outlier detection in GOSH results
+        effect_q75, effect_q25 = np.percentile(gosh_effects, [75, 25])
+        effect_iqr = effect_q75 - effect_q25
+        effect_outliers = np.sum((np.array(gosh_effects) < (effect_q25 - 1.5 * effect_iqr)) | 
+                               (np.array(gosh_effects) > (effect_q75 + 1.5 * effect_iqr)))
+        
+        gosh_results.update({
+            'effect_outliers': effect_outliers,
+            'effect_outlier_proportion': effect_outliers / len(gosh_effects) if len(gosh_effects) > 0 else 0,
+            'multimodal_warning': effect_outliers > len(gosh_effects) * 0.1  # >10% outliers suggests multimodality
+        })
+        
+        if not hasattr(self.results, 'gosh_results'):
+            self.results.gosh_results = gosh_results
+        
+        return fig
     
     # ===================================================================
     # SUBGROUP ANALYSIS (ENHANCED)
@@ -2480,7 +2834,7 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                    report.append(f"PET-PEESE corrected: {fmt_num(pet_peese['corrected_effect'])}")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -3125,6 +3479,39 @@ class EnhancedGRADE:
         return pd.DataFrame(grade_data)
 
 # ===================================================================
+# SAFE NUMERIC FORMATTING UTILITY
+# ===================================================================
+
+def fmt_num(val, fmt: str = "{:.3f}") -> str:
+    """
+    Safe numeric formatting utility that handles None values and errors gracefully.
+    
+    Args:
+        val: Value to format (can be numeric, None, or any other type)
+        fmt: Format string for numeric values (default: "{:.3f}")
+        
+    Returns:
+        str: Formatted string - "N/A" for None, formatted numeric for numbers,
+             str(val) as fallback for other types or errors
+    """
+    if val is None:
+        return "N/A"
+    
+    try:
+        # Try to format as a number
+        if isinstance(val, (int, float)) and not (np.isnan(val) or np.isinf(val)):
+            return fmt.format(val)
+        else:
+            # Handle NaN/inf or attempt conversion
+            float_val = float(val)
+            if np.isnan(float_val) or np.isinf(float_val):
+                return "N/A"
+            return fmt.format(float_val)
+    except (TypeError, ValueError, AttributeError):
+        # Fallback to string representation for any error
+        return str(val)
+
+# ===================================================================
 # HELPER UTILITIES FOR DEMO MODULARITY
 # ===================================================================
 
@@ -3293,13 +3680,13 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
         
         if hasattr(bias, 'egger'):
             egger_p = bias.egger.get('p_value', 'N/A')
-            print(f"Egger test p-value: {egger_p:.3f}" if egger_p != 'N/A' else f"Egger test p-value: {egger_p}")
+            print(f"Egger test p-value: {fmt_num(egger_p)}")
             results['egger_p'] = egger_p
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
             if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
+                print(f"PET-PEESE corrected effect: {fmt_num(pet_peese['corrected_effect'])}")
                 results['pet_peese_effect'] = pet_peese['corrected_effect']
         
         if hasattr(bias, 'trim_fill'):
