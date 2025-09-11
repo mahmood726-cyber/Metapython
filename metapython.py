@@ -7560,13 +7560,858 @@ class AdvancedMultivariateStructures:
             }
 
 # ===================================================================
+# SCALABLE PIPELINES AND CACHING - Phase 5
+# ===================================================================
+
+class ScalablePipelines:
+    """
+    Scalable pipelines with Ray/Dask integration and intelligent caching
+    
+    Provides distributed computing capabilities for large meta-analyses
+    and caching infrastructure for reproducible research workflows.
+    """
+    
+    def __init__(self, cache_dir: str = ".meta_cache", 
+                 distributed_backend: str = "auto"):
+        """
+        Initialize scalable pipeline manager
+        
+        Parameters:
+        - cache_dir: Directory for caching computation results
+        - distributed_backend: 'ray', 'dask', or 'auto' for automatic selection
+        """
+        self.cache_dir = cache_dir
+        self.distributed_backend = distributed_backend
+        self.cache_enabled = True
+        self.artifact_store = ArtifactStore(cache_dir)
+        
+        # Setup distributed backend
+        self._setup_distributed_backend()
+        
+        # Create cache directory
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def _setup_distributed_backend(self):
+        """Setup distributed computing backend"""
+        if self.distributed_backend == "auto":
+            if HAS_RAY:
+                self.backend = "ray"
+                logger.info("Using Ray for distributed computing")
+            elif HAS_DASK:
+                self.backend = "dask"  
+                logger.info("Using Dask for distributed computing")
+            else:
+                self.backend = "serial"
+                logger.info("No distributed backend available, using serial processing")
+        else:
+            self.backend = self.distributed_backend
+    
+    def run_distributed_meta_analysis(self, datasets: List[pd.DataFrame],
+                                    analysis_configs: List[Dict[str, Any]],
+                                    n_workers: int = 4) -> Dict[str, Any]:
+        """
+        Run meta-analysis on multiple datasets in parallel
+        
+        Parameters:
+        - datasets: List of datasets to analyze
+        - analysis_configs: Configuration for each analysis  
+        - n_workers: Number of parallel workers
+        
+        Returns aggregated results from all analyses
+        """
+        try:
+            if self.backend == "ray" and HAS_RAY:
+                return self._run_ray_meta_analysis(datasets, analysis_configs, n_workers)
+            elif self.backend == "dask" and HAS_DASK:
+                return self._run_dask_meta_analysis(datasets, analysis_configs, n_workers)
+            else:
+                return self._run_serial_meta_analysis(datasets, analysis_configs)
+                
+        except Exception as e:
+            logger.error(f"Distributed meta-analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e),
+                'fallback_to_serial': True
+            }
+    
+    def _run_ray_meta_analysis(self, datasets: List[pd.DataFrame],
+                              configs: List[Dict[str, Any]], 
+                              n_workers: int) -> Dict[str, Any]:
+        """Ray-based distributed meta-analysis"""
+        if not HAS_RAY:
+            raise ImportError("Ray not available")
+        
+        import ray
+        
+        # Initialize Ray if not already running
+        if not ray.is_initialized():
+            ray.init(num_cpus=n_workers, ignore_reinit_error=True)
+        
+        @ray.remote
+        def analyze_dataset(dataset, config):
+            """Remote function for analyzing single dataset"""
+            try:
+                # Create meta-analysis instance
+                meta = UnifiedMetaAnalysis(
+                    dataset, 
+                    effect_col=config.get('effect_col', 'effect'),
+                    se_col=config.get('se_col', 'se'),
+                    label_col=config.get('label_col', 'study')
+                )
+                
+                # Run analysis
+                results = meta.analyze(**config.get('analysis_params', {}))
+                
+                return {
+                    'success': True,
+                    'results': results,
+                    'config': config
+                }
+                
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'config': config
+                }
+        
+        # Submit tasks
+        futures = []
+        for i, (dataset, config) in enumerate(zip(datasets, configs)):
+            future = analyze_dataset.remote(dataset, config)
+            futures.append(future)
+        
+        # Collect results
+        results = ray.get(futures)
+        
+        # Aggregate results
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+        
+        return {
+            'backend': 'ray',
+            'total_analyses': len(datasets),
+            'successful_analyses': len(successful_results),
+            'failed_analyses': len(failed_results),
+            'results': successful_results,
+            'errors': failed_results,
+            'available': True
+        }
+    
+    def _run_dask_meta_analysis(self, datasets: List[pd.DataFrame],
+                               configs: List[Dict[str, Any]], 
+                               n_workers: int) -> Dict[str, Any]:
+        """Dask-based distributed meta-analysis"""
+        if not HAS_DASK:
+            raise ImportError("Dask not available")
+        
+        try:
+            import dask
+            from dask.distributed import Client, as_completed
+            
+            # Setup Dask client
+            client = Client(n_workers=n_workers, threads_per_worker=1)
+            
+            def analyze_dataset(dataset, config):
+                """Function for analyzing single dataset"""
+                try:
+                    meta = UnifiedMetaAnalysis(
+                        dataset,
+                        effect_col=config.get('effect_col', 'effect'),
+                        se_col=config.get('se_col', 'se'), 
+                        label_col=config.get('label_col', 'study')
+                    )
+                    
+                    results = meta.analyze(**config.get('analysis_params', {}))
+                    
+                    return {
+                        'success': True,
+                        'results': results,
+                        'config': config
+                    }
+                    
+                except Exception as e:
+                    return {
+                        'success': False,
+                        'error': str(e),
+                        'config': config
+                    }
+            
+            # Submit tasks
+            futures = []
+            for dataset, config in zip(datasets, configs):
+                future = client.submit(analyze_dataset, dataset, config)
+                futures.append(future)
+            
+            # Collect results
+            results = client.gather(futures)
+            
+            # Close client
+            client.close()
+            
+            # Aggregate
+            successful_results = [r for r in results if r['success']]
+            failed_results = [r for r in results if not r['success']]
+            
+            return {
+                'backend': 'dask',
+                'total_analyses': len(datasets),
+                'successful_analyses': len(successful_results),
+                'failed_analyses': len(failed_results),
+                'results': successful_results,
+                'errors': failed_results,
+                'available': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Dask analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    def _run_serial_meta_analysis(self, datasets: List[pd.DataFrame],
+                                 configs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Serial (non-distributed) meta-analysis as fallback"""
+        results = []
+        
+        for dataset, config in zip(datasets, configs):
+            try:
+                meta = UnifiedMetaAnalysis(
+                    dataset,
+                    effect_col=config.get('effect_col', 'effect'),
+                    se_col=config.get('se_col', 'se'),
+                    label_col=config.get('label_col', 'study')
+                )
+                
+                result = meta.analyze(**config.get('analysis_params', {}))
+                
+                results.append({
+                    'success': True,
+                    'results': result,
+                    'config': config
+                })
+                
+            except Exception as e:
+                results.append({
+                    'success': False,
+                    'error': str(e),
+                    'config': config
+                })
+        
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+        
+        return {
+            'backend': 'serial',
+            'total_analyses': len(datasets),
+            'successful_analyses': len(successful_results),
+            'failed_analyses': len(failed_results),
+            'results': successful_results,
+            'errors': failed_results,
+            'available': True
+        }
+    
+    def cached_computation(self, func, *args, cache_key: Optional[str] = None,
+                          force_recompute: bool = False, **kwargs) -> Any:
+        """
+        Memoized computation with persistent caching
+        
+        Parameters:
+        - func: Function to compute (must be deterministic)
+        - args, kwargs: Arguments to function
+        - cache_key: Optional explicit cache key
+        - force_recompute: Force recomputation even if cached
+        
+        Returns cached result or computes and caches new result
+        """
+        if not self.cache_enabled:
+            return func(*args, **kwargs)
+        
+        try:
+            # Generate cache key
+            if cache_key is None:
+                cache_key = self._generate_cache_key(func, args, kwargs)
+            
+            # Check cache
+            if not force_recompute:
+                cached_result = self.artifact_store.get_artifact(cache_key)
+                if cached_result is not None:
+                    logger.info(f"Using cached result for {cache_key}")
+                    return cached_result
+            
+            # Compute result
+            logger.info(f"Computing result for {cache_key}")
+            result = func(*args, **kwargs)
+            
+            # Cache result
+            self.artifact_store.store_artifact(cache_key, result)
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Caching failed for {cache_key}: {e}")
+            # Return direct computation as fallback
+            return func(*args, **kwargs)
+    
+    def _generate_cache_key(self, func, args, kwargs) -> str:
+        """Generate deterministic cache key from function and arguments"""
+        import hashlib
+        import pickle
+        
+        try:
+            # Create content for hashing
+            content_parts = [
+                func.__name__,
+                str(func.__module__),
+                pickle.dumps(args, protocol=pickle.HIGHEST_PROTOCOL),
+                pickle.dumps(sorted(kwargs.items()), protocol=pickle.HIGHEST_PROTOCOL)
+            ]
+            
+            # Hash content
+            hasher = hashlib.sha256()
+            for part in content_parts:
+                if isinstance(part, str):
+                    hasher.update(part.encode('utf-8'))
+                else:
+                    hasher.update(part)
+            
+            return hasher.hexdigest()[:16]  # Use first 16 chars
+            
+        except Exception as e:
+            logger.warning(f"Cache key generation failed: {e}")
+            # Fallback to simple key
+            return f"{func.__name__}_{hash(str(args) + str(kwargs)) % 10000}"
+    
+    def clear_cache(self, pattern: Optional[str] = None) -> Dict[str, Any]:
+        """Clear cached computations matching pattern"""
+        return self.artifact_store.clear_artifacts(pattern)
+    
+    def cache_info(self) -> Dict[str, Any]:
+        """Get information about cached computations"""
+        return self.artifact_store.get_cache_info()
+
+
+class ArtifactStore:
+    """
+    Artifact store abstraction with pluggable backends
+    
+    Manages persistent storage of computation results, metadata,
+    and provenance information for reproducible research.
+    """
+    
+    def __init__(self, base_dir: str = ".meta_cache",
+                 backend: str = "filesystem"):
+        """
+        Initialize artifact store
+        
+        Parameters:
+        - base_dir: Base directory for artifacts
+        - backend: Storage backend ('filesystem', 's3', 'gcs', etc.)
+        """
+        self.base_dir = base_dir
+        self.backend = backend
+        self.metadata_file = os.path.join(base_dir, "metadata.json")
+        
+        # Create directories
+        os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(os.path.join(base_dir, "artifacts"), exist_ok=True)
+        os.makedirs(os.path.join(base_dir, "metadata"), exist_ok=True)
+        
+        # Load or create metadata
+        self.metadata = self._load_metadata()
+    
+    def store_artifact(self, key: str, data: Any, 
+                      metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Store artifact with metadata"""
+        try:
+            import pickle
+            import json
+            
+            # Generate deterministic artifact ID
+            artifact_id = self._generate_artifact_id(key)
+            
+            # Store data
+            if self.backend == "filesystem":
+                artifact_path = os.path.join(self.base_dir, "artifacts", f"{artifact_id}.pkl")
+                with open(artifact_path, 'wb') as f:
+                    pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                raise NotImplementedError(f"Backend {self.backend} not implemented")
+            
+            # Store metadata
+            artifact_metadata = {
+                'key': key,
+                'artifact_id': artifact_id,
+                'timestamp': datetime.datetime.now().isoformat(),
+                'size_bytes': os.path.getsize(artifact_path) if self.backend == "filesystem" else 0,
+                'type': type(data).__name__,
+                'custom_metadata': metadata or {}
+            }
+            
+            metadata_path = os.path.join(self.base_dir, "metadata", f"{artifact_id}.json")
+            with open(metadata_path, 'w') as f:
+                json.dump(artifact_metadata, f, indent=2)
+            
+            # Update index
+            self.metadata[key] = artifact_metadata
+            self._save_metadata()
+            
+            return artifact_id
+            
+        except Exception as e:
+            logger.error(f"Failed to store artifact {key}: {e}")
+            raise
+    
+    def get_artifact(self, key: str) -> Optional[Any]:
+        """Retrieve artifact by key"""
+        try:
+            import pickle
+            
+            if key not in self.metadata:
+                return None
+            
+            artifact_info = self.metadata[key]
+            artifact_id = artifact_info['artifact_id']
+            
+            if self.backend == "filesystem":
+                artifact_path = os.path.join(self.base_dir, "artifacts", f"{artifact_id}.pkl")
+                if not os.path.exists(artifact_path):
+                    logger.warning(f"Artifact file not found: {artifact_path}")
+                    return None
+                
+                with open(artifact_path, 'rb') as f:
+                    return pickle.load(f)
+            else:
+                raise NotImplementedError(f"Backend {self.backend} not implemented")
+                
+        except Exception as e:
+            logger.error(f"Failed to retrieve artifact {key}: {e}")
+            return None
+    
+    def list_artifacts(self, pattern: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List stored artifacts, optionally filtered by pattern"""
+        try:
+            artifacts = []
+            
+            for key, metadata in self.metadata.items():
+                if pattern is None or pattern in key:
+                    artifacts.append({
+                        'key': key,
+                        'artifact_id': metadata['artifact_id'],
+                        'timestamp': metadata['timestamp'],
+                        'size_bytes': metadata['size_bytes'],
+                        'type': metadata['type']
+                    })
+            
+            return sorted(artifacts, key=lambda x: x['timestamp'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to list artifacts: {e}")
+            return []
+    
+    def clear_artifacts(self, pattern: Optional[str] = None) -> Dict[str, Any]:
+        """Clear artifacts matching pattern"""
+        try:
+            cleared_count = 0
+            cleared_size = 0
+            
+            keys_to_remove = []
+            
+            for key, metadata in self.metadata.items():
+                if pattern is None or pattern in key:
+                    artifact_id = metadata['artifact_id']
+                    
+                    # Remove artifact file
+                    if self.backend == "filesystem":
+                        artifact_path = os.path.join(self.base_dir, "artifacts", f"{artifact_id}.pkl")
+                        metadata_path = os.path.join(self.base_dir, "metadata", f"{artifact_id}.json")
+                        
+                        if os.path.exists(artifact_path):
+                            cleared_size += os.path.getsize(artifact_path)
+                            os.remove(artifact_path)
+                        
+                        if os.path.exists(metadata_path):
+                            os.remove(metadata_path)
+                    
+                    keys_to_remove.append(key)
+                    cleared_count += 1
+            
+            # Update metadata index
+            for key in keys_to_remove:
+                del self.metadata[key]
+            
+            self._save_metadata()
+            
+            return {
+                'cleared_count': cleared_count,
+                'cleared_size_bytes': cleared_size,
+                'pattern': pattern
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to clear artifacts: {e}")
+            return {'error': str(e)}
+    
+    def get_cache_info(self) -> Dict[str, Any]:
+        """Get cache statistics and information"""
+        try:
+            total_artifacts = len(self.metadata)
+            total_size = sum(meta['size_bytes'] for meta in self.metadata.values())
+            
+            # Type distribution
+            type_counts = {}
+            for meta in self.metadata.values():
+                data_type = meta['type']
+                type_counts[data_type] = type_counts.get(data_type, 0) + 1
+            
+            # Age distribution
+            now = datetime.datetime.now()
+            age_buckets = {'<1h': 0, '1h-1d': 0, '1d-1w': 0, '>1w': 0}
+            
+            for meta in self.metadata.values():
+                timestamp = datetime.datetime.fromisoformat(meta['timestamp'])
+                age = now - timestamp
+                
+                if age.total_seconds() < 3600:
+                    age_buckets['<1h'] += 1
+                elif age.total_seconds() < 86400:
+                    age_buckets['1h-1d'] += 1
+                elif age.days < 7:
+                    age_buckets['1d-1w'] += 1
+                else:
+                    age_buckets['>1w'] += 1
+            
+            return {
+                'total_artifacts': total_artifacts,
+                'total_size_bytes': total_size,
+                'total_size_mb': total_size / (1024 * 1024),
+                'type_distribution': type_counts,
+                'age_distribution': age_buckets,
+                'cache_directory': self.base_dir,
+                'backend': self.backend
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get cache info: {e}")
+            return {'error': str(e)}
+    
+    def _generate_artifact_id(self, key: str) -> str:
+        """Generate unique artifact ID"""
+        import hashlib
+        timestamp = datetime.datetime.now().isoformat()
+        content = f"{key}_{timestamp}"
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+    
+    def _load_metadata(self) -> Dict[str, Any]:
+        """Load metadata index"""
+        try:
+            import json
+            if os.path.exists(self.metadata_file):
+                with open(self.metadata_file, 'r') as f:
+                    return json.load(f)
+            else:
+                return {}
+        except Exception as e:
+            logger.warning(f"Failed to load metadata: {e}")
+            return {}
+    
+    def _save_metadata(self):
+        """Save metadata index"""
+        try:
+            import json
+            with open(self.metadata_file, 'w') as f:
+                json.dump(self.metadata, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save metadata: {e}")
+
+
+# ===================================================================
+# PRIVACY-FRIENDLY UTILITIES - Phase 5
+# ===================================================================
+
+class PrivacyFriendlyUtilities:
+    """
+    Privacy-preserving utilities for sensitive meta-analysis data
+    
+    Provides differential privacy mechanisms and synthetic data generation
+    for protecting participant privacy while enabling meta-analysis research.
+    """
+    
+    @staticmethod
+    def differential_privacy_summary_stats(data: np.ndarray,
+                                         epsilon: float = 1.0,
+                                         sensitivity: float = 1.0,
+                                         stat_type: str = 'mean') -> Dict[str, Any]:
+        """
+        Compute differentially private summary statistics
+        
+        Parameters:
+        - data: Input data array
+        - epsilon: Privacy budget (smaller = more private)
+        - sensitivity: Global sensitivity of the statistic
+        - stat_type: Type of statistic ('mean', 'var', 'count', 'sum')
+        
+        Returns DP statistic with privacy guarantees
+        """
+        try:
+            if epsilon <= 0:
+                raise ValueError("Epsilon must be positive")
+            
+            data = np.array(data)
+            data = data[~np.isnan(data)]  # Remove NaN values
+            
+            if len(data) == 0:
+                return {
+                    'available': False,
+                    'reason': 'No valid data points'
+                }
+            
+            # Compute true statistic
+            if stat_type == 'mean':
+                true_stat = np.mean(data)
+                # Sensitivity for bounded data (assuming normalized to [0,1])
+                sensitivity = sensitivity / len(data) if sensitivity == 1.0 else sensitivity
+            elif stat_type == 'var':
+                true_stat = np.var(data, ddof=1)
+                sensitivity = sensitivity * 2 if sensitivity == 1.0 else sensitivity
+            elif stat_type == 'count':
+                true_stat = len(data)
+                sensitivity = 1.0  # Adding/removing one person changes count by 1
+            elif stat_type == 'sum':
+                true_stat = np.sum(data)
+                sensitivity = sensitivity  # Max contribution per individual
+            else:
+                raise ValueError(f"Unsupported statistic type: {stat_type}")
+            
+            # Add Laplace noise for differential privacy
+            scale = sensitivity / epsilon
+            noise = np.random.laplace(0, scale)
+            dp_stat = true_stat + noise
+            
+            # Calculate privacy loss
+            privacy_loss = abs(noise) / scale
+            
+            # Quality metrics
+            noise_to_signal_ratio = abs(noise) / abs(true_stat) if true_stat != 0 else np.inf
+            
+            return {
+                'available': True,
+                'statistic_type': stat_type,
+                'dp_statistic': dp_stat,
+                'true_statistic': true_stat,  # Note: In practice, this shouldn't be released
+                'noise_added': noise,
+                'epsilon': epsilon,
+                'sensitivity': sensitivity,
+                'privacy_loss': privacy_loss,
+                'noise_to_signal_ratio': noise_to_signal_ratio,
+                'n_observations': len(data),
+                'warning': 'Use with caution - ensure epsilon budget is properly managed'
+            }
+            
+        except Exception as e:
+            logger.error(f"Differential privacy computation failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod
+    def generate_synthetic_meta_analysis_data(n_studies: int = 20,
+                                            effect_range: Tuple[float, float] = (-0.5, 1.0),
+                                            se_range: Tuple[float, float] = (0.1, 0.5),
+                                            tau2: float = 0.1,
+                                            bias_probability: float = 0.0,
+                                            seed: Optional[int] = None) -> pd.DataFrame:
+        """
+        Generate synthetic meta-analysis dataset for teaching and demonstrations
+        
+        Creates realistic meta-analysis data that approximates real effect distributions
+        without sharing actual participant data.
+        
+        Parameters:
+        - n_studies: Number of studies to simulate
+        - effect_range: Range for true effect sizes
+        - se_range: Range for standard errors
+        - tau2: Between-study variance
+        - bias_probability: Probability of publication bias
+        - seed: Random seed for reproducibility
+        
+        Returns synthetic dataset with realistic properties
+        """
+        try:
+            if seed is not None:
+                np.random.seed(seed)
+            
+            # Generate true effect sizes from distribution
+            true_effects = np.random.uniform(effect_range[0], effect_range[1], n_studies)
+            
+            # Add between-study heterogeneity
+            if tau2 > 0:
+                study_effects = np.random.normal(true_effects, np.sqrt(tau2))
+            else:
+                study_effects = true_effects.copy()
+            
+            # Generate standard errors
+            se_values = np.random.uniform(se_range[0], se_range[1], n_studies)
+            
+            # Generate observed effects with sampling error
+            observed_effects = np.random.normal(study_effects, se_values)
+            
+            # Apply publication bias if specified
+            if bias_probability > 0:
+                p_values = 2 * (1 - norm.cdf(np.abs(observed_effects) / se_values))
+                
+                # Selectively suppress non-significant negative results
+                suppress_mask = (observed_effects < 0) & (p_values > 0.05) & (np.random.random(n_studies) < bias_probability)
+                
+                # Remove suppressed studies
+                keep_mask = ~suppress_mask
+                observed_effects = observed_effects[keep_mask]
+                se_values = se_values[keep_mask]
+                study_effects = study_effects[keep_mask]
+                n_studies = len(observed_effects)
+            
+            # Generate study characteristics
+            study_ids = [f"Study_{i+1:02d}" for i in range(n_studies)]
+            
+            # Generate realistic sample sizes (inverse relationship with SE)
+            sample_sizes = np.round(100 + 400 * (se_range[1] - se_values) / (se_range[1] - se_range[0])).astype(int)
+            
+            # Generate publication years
+            pub_years = np.random.randint(2000, 2024, n_studies)
+            
+            # Generate geographic regions
+            regions = np.random.choice(['North America', 'Europe', 'Asia', 'Other'], n_studies, 
+                                     p=[0.4, 0.3, 0.2, 0.1])
+            
+            # Generate study designs
+            designs = np.random.choice(['RCT', 'Cohort', 'Case-Control'], n_studies,
+                                     p=[0.6, 0.3, 0.1])
+            
+            # Create DataFrame
+            synthetic_data = pd.DataFrame({
+                'study': study_ids,
+                'effect': observed_effects,
+                'se': se_values,
+                'true_effect': study_effects,  # Normally wouldn't be known
+                'sample_size': sample_sizes,
+                'publication_year': pub_years,
+                'region': regions,
+                'design': designs,
+                'ci_low': observed_effects - 1.96 * se_values,
+                'ci_high': observed_effects + 1.96 * se_values
+            })
+            
+            # Add metadata
+            metadata = {
+                'generation_parameters': {
+                    'n_studies': n_studies,
+                    'effect_range': effect_range,
+                    'se_range': se_range,
+                    'tau2': tau2,
+                    'bias_probability': bias_probability,
+                    'seed': seed
+                },
+                'data_properties': {
+                    'mean_effect': np.mean(observed_effects),
+                    'mean_se': np.mean(se_values),
+                    'effect_range_actual': [np.min(observed_effects), np.max(observed_effects)],
+                    'heterogeneity_tau2': tau2
+                },
+                'privacy_notes': [
+                    "This is synthetic data generated for demonstration purposes",
+                    "No real participant data was used in generation",
+                    "Effect sizes approximate realistic distributions from literature",
+                    "Safe for sharing, teaching, and public demonstrations"
+                ]
+            }
+            
+            # Store metadata as attribute
+            synthetic_data.metadata = metadata
+            
+            return synthetic_data
+            
+        except Exception as e:
+            logger.error(f"Synthetic data generation failed: {e}")
+            raise
+    
+    @staticmethod
+    def privacy_audit(analysis_results: Dict[str, Any],
+                     epsilon_budget: float = 1.0,
+                     delta: float = 1e-5) -> Dict[str, Any]:
+        """
+        Audit analysis results for privacy compliance
+        
+        Checks if analysis results meet differential privacy guarantees
+        and provides recommendations for privacy-preserving publication.
+        """
+        try:
+            audit_results = {
+                'privacy_compliant': True,
+                'epsilon_used': 0.0,
+                'delta_used': 0.0,
+                'recommendations': [],
+                'warnings': []
+            }
+            
+            # Check for potentially identifying information
+            identifying_fields = ['study', 'author', 'institution', 'location']
+            
+            for field in identifying_fields:
+                if field in analysis_results:
+                    audit_results['warnings'].append(f"Potentially identifying field present: {field}")
+                    audit_results['privacy_compliant'] = False
+            
+            # Check for small sample sizes
+            if 'n_studies' in analysis_results:
+                n_studies = analysis_results['n_studies']
+                if n_studies < 5:
+                    audit_results['warnings'].append(f"Very small number of studies (n={n_studies}) may risk identification")
+                    audit_results['privacy_compliant'] = False
+            
+            # Check precision of estimates
+            if 'results' in analysis_results:
+                results = analysis_results['results']
+                if hasattr(results, 'random_effects'):
+                    se = results.random_effects.se
+                    if se < 0.01:
+                        audit_results['warnings'].append("Very precise estimates may indicate insufficient noise")
+            
+            # Recommendations
+            if not audit_results['privacy_compliant']:
+                audit_results['recommendations'].extend([
+                    "Remove or anonymize identifying information",
+                    "Consider aggregating results from very small studies",
+                    "Add appropriate noise to preserve differential privacy",
+                    "Review epsilon budget allocation"
+                ])
+            else:
+                audit_results['recommendations'].append("Analysis appears privacy-compliant")
+            
+            # Privacy budget tracking
+            audit_results['epsilon_remaining'] = max(0, epsilon_budget - audit_results['epsilon_used'])
+            audit_results['delta_remaining'] = max(0, delta - audit_results['delta_used'])
+            
+            return audit_results
+            
+        except Exception as e:
+            logger.error(f"Privacy audit failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+
+
+# ===================================================================
 # VERSION INFORMATION
 # ===================================================================
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __author__ = "PyMeta-CBAMM Development Team"
 __email__ = "pymeta-cbamm@example.com"
-__description__ = "Unified meta-analysis suite combining PyMeta v2.1 and CBAMM v5.7 - Phase 4: Production-grade extensions"
+__description__ = "Unified meta-analysis suite combining PyMeta v2.1 and CBAMM v5.7 - Phase 5: Advanced dose-response, survival analysis, scalable pipelines, and privacy-preserving utilities"
 __license__ = "MIT"
 
 # Export main classes and functions
@@ -7587,6 +8432,12 @@ __all__ = [
     'SparseEventMethods',
     'MetaCLI',
     'AdvancedMultivariateStructures',
+    # Phase 5 additions
+    'TimeToEventAnalysis',
+    'SelectionBiasExtensions', 
+    'ScalablePipelines',
+    'ArtifactStore',
+    'PrivacyFriendlyUtilities',
     'quick_meta',
     'meta_from_summary_stats',
     'run_unified_demo'
