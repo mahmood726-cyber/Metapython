@@ -1,0 +1,62 @@
+# MetaPython Phase 4 Pipeline Configuration Example
+# Demonstrates network inconsistency, sparse events, and DTA analysis
+
+pipeline:
+  - name: load_network_data
+    type: load_data
+    params:
+      file: "network_data.csv"
+      
+  - name: network_inconsistency_analysis
+    type: network_inconsistency
+    params:
+      data_source: load_network_data
+      treatment_col: treatment
+      comparator_col: comparator
+      effect_col: log_or
+      se_col: se_log_or
+      
+  - name: load_sparse_events_data
+    type: load_data
+    params:
+      file: "sparse_events_data.csv"
+      
+  - name: sparse_events_analysis
+    type: sparse_events
+    params:
+      data_source: load_sparse_events_data
+      treatment_events_col: t_events
+      treatment_total_col: t_total
+      control_events_col: c_events
+      control_total_col: c_total
+      method: "auto"  # Use guidance to select method
+      
+  - name: load_dta_data
+    type: load_data
+    params:
+      file: "diagnostic_accuracy_data.csv"
+      
+  - name: diagnostic_accuracy_analysis
+    type: diagnostic_accuracy
+    params:
+      data_source: load_dta_data
+      tp_col: true_positive
+      fn_col: false_negative
+      fp_col: false_positive
+      tn_col: true_negative
+      hsroc_method: logit
+      pre_test_prob: 0.15
+      
+  - name: generate_comprehensive_report
+    type: generate_report
+    params:
+      output_dir: "phase4_pipeline_output"
+      save_json: true
+      save_csv: true
+      save_html: true
+
+# Global settings
+settings:
+  random_seed: 42
+  output_base_dir: "metapython_outputs"
+  log_level: INFO
