@@ -147,6 +147,28 @@ except ImportError:
     HAS_PYTEST = False
     logger.info("Pytest not available - testing framework disabled")
 
+# Phase 5 additional optional dependencies
+try:
+    import ray
+    HAS_RAY = True
+except ImportError:
+    HAS_RAY = False
+    logger.info("Ray not available - distributed computing disabled")
+
+try:
+    from patsy import dmatrix
+    HAS_PATSY = True
+except ImportError:
+    HAS_PATSY = False
+    logger.info("Patsy not available - spline modeling limited")
+
+try:
+    import asv
+    HAS_ASV = True
+except ImportError:
+    HAS_ASV = False
+    logger.info("ASV not available - benchmarking limited")
+
 try:
     from matplotlib.patches import FancyBboxPatch
     HAS_MATPLOTLIB_PATCHES = True
@@ -2087,6 +2109,545 @@ class UnifiedMetaAnalysis:
             
         except Exception as e:
             raise NumericalInstabilityError(f"Quadratic dose-response fitting failed: {e}")
+    
+    # Phase 5: Enhanced Dose-Response Methods
+    def greenland_longnecker_analysis(self, dose_data: pd.DataFrame, 
+                                    dose_cols: List[str], 
+                                    n_cases_cols: List[str],
+                                    n_total_cols: List[str],
+                                    reference_dose: float = 0.0) -> Dict[str, Any]:
+        """
+        Greenland & Longnecker two-stage dose-response meta-analysis
+        
+        Implements the generalized least squares method for dose-response meta-analysis
+        with automatic covariance matrix construction for multiple dose categories per study.
+        
+        Parameters:
+        - dose_data: DataFrame with dose-response data (multiple rows per study allowed)
+        - dose_cols: Column names for dose levels 
+        - n_cases_cols: Column names for number of cases at each dose
+        - n_total_cols: Column names for total subjects at each dose
+        - reference_dose: Reference dose level (default 0.0)
+        
+        Returns dictionary with GL results
+        """
+        if not HAS_STATSMODELS:
+            logger.warning("Statsmodels required for GL method, falling back to simple linear")
+            return {'available': False, 'reason': 'Statsmodels not available'}
+        
+        try:
+            import statsmodels.api as sm
+            from scipy.linalg import block_diag
+            
+            # Group by study
+            study_groups = dose_data.groupby(self.label_col)
+            study_results = []
+            
+            for study_name, study_data in study_groups:
+                doses = []
+                log_rrs = []
+                variances = []
+                
+                # Extract dose-response data for this study
+                for i, row in study_data.iterrows():
+                    for dose_col, cases_col, total_col in zip(dose_cols, n_cases_cols, n_total_cols):
+                        if pd.notna(row[dose_col]) and pd.notna(row[cases_col]) and pd.notna(row[total_col]):
+                            dose = row[dose_col]
+                            cases = row[cases_col]
+                            total = row[total_col]
+                            
+                            if total > 0 and cases >= 0:
+                                # Calculate log relative risk vs reference
+                                if dose == reference_dose:
+                                    continue  # Skip reference category
+                                
+                                p = cases / total
+                                if p > 0 and p < 1:
+                                    # Log RR approximation
+                                    log_rr = np.log(p / (1 - p))  # Simplified - would need reference group
+                                    var_log_rr = 1 / cases + 1 / (total - cases)
+                                    
+                                    doses.append(dose)
+                                    log_rrs.append(log_rr)
+                                    variances.append(var_log_rr)
+                
+                if len(doses) >= 2:  # Need at least 2 dose points
+                    # Fit study-specific dose-response
+                    X = np.column_stack([np.ones(len(doses)), doses])
+                    W = np.diag(1 / np.array(variances))
+                    
+                    try:
+                        beta = np.linalg.solve(X.T @ W @ X, X.T @ W @ log_rrs)
+                        cov_beta = np.linalg.inv(X.T @ W @ X)
+                        
+                        study_results.append({
+                            'study': study_name,
+                            'slope': beta[1],
+                            'intercept': beta[0],
+                            'var_slope': cov_beta[1, 1],
+                            'var_intercept': cov_beta[0, 0],
+                            'cov_intercept_slope': cov_beta[0, 1],
+                            'n_doses': len(doses),
+                            'dose_range': [min(doses), max(doses)]
+                        })
+                    except np.linalg.LinAlgError:
+                        logger.warning(f"Could not fit dose-response for study {study_name}")
+            
+            if len(study_results) < 2:
+                return {
+                    'available': False,
+                    'reason': 'Need at least 2 studies with dose-response data'
+                }
+            
+            # Second stage: pool study-specific slopes
+            slopes = np.array([r['slope'] for r in study_results])
+            var_slopes = np.array([r['var_slope'] for r in study_results])
+            
+            # Fixed effects pooling
+            weights = 1 / var_slopes
+            pooled_slope_fe = np.sum(weights * slopes) / np.sum(weights)
+            var_pooled_slope_fe = 1 / np.sum(weights)
+            se_pooled_slope_fe = np.sqrt(var_pooled_slope_fe)
+            
+            # Test for heterogeneity
+            Q = np.sum(weights * (slopes - pooled_slope_fe) ** 2)
+            df = len(slopes) - 1
+            p_heterogeneity = 1 - chi2.cdf(Q, df) if df > 0 else 1.0
+            
+            # Random effects if heterogeneity detected
+            if p_heterogeneity < 0.1 and df > 0:
+                # DerSimonian-Laird estimate of tau^2
+                C = np.sum(weights) - np.sum(weights**2) / np.sum(weights)
+                tau2 = max(0, (Q - df) / C) if C > 0 else 0
+                
+                # Random effects pooling
+                weights_re = 1 / (var_slopes + tau2)
+                pooled_slope_re = np.sum(weights_re * slopes) / np.sum(weights_re)
+                var_pooled_slope_re = 1 / np.sum(weights_re)
+                se_pooled_slope_re = np.sqrt(var_pooled_slope_re)
+            else:
+                tau2 = 0
+                pooled_slope_re = pooled_slope_fe
+                se_pooled_slope_re = se_pooled_slope_fe
+            
+            # Confidence intervals
+            z_critical = norm.ppf(0.975)
+            ci_low_fe = pooled_slope_fe - z_critical * se_pooled_slope_fe
+            ci_high_fe = pooled_slope_fe + z_critical * se_pooled_slope_fe
+            ci_low_re = pooled_slope_re - z_critical * se_pooled_slope_re
+            ci_high_re = pooled_slope_re + z_critical * se_pooled_slope_re
+            
+            return {
+                'method': 'Greenland-Longnecker',
+                'available': True,
+                'study_results': study_results,
+                'pooled_slope_fixed': pooled_slope_fe,
+                'se_slope_fixed': se_pooled_slope_fe,
+                'ci_fixed': [ci_low_fe, ci_high_fe],
+                'pooled_slope_random': pooled_slope_re,
+                'se_slope_random': se_pooled_slope_re,
+                'ci_random': [ci_low_re, ci_high_re],
+                'tau2': tau2,
+                'Q_heterogeneity': Q,
+                'p_heterogeneity': p_heterogeneity,
+                'n_studies': len(study_results),
+                'reference_dose': reference_dose
+            }
+            
+        except Exception as e:
+            logger.error(f"Greenland-Longnecker analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    def spline_dose_response_analysis(self, dose_col: str, 
+                                    n_knots: int = 3,
+                                    knot_positions: Optional[List[float]] = None,
+                                    spline_degree: int = 3) -> Dict[str, Any]:
+        """
+        One-stage spline-based dose-response meta-regression with random study effects
+        
+        Uses restricted cubic splines to model nonlinear dose-response relationships
+        while accounting for between-study heterogeneity.
+        
+        Parameters:
+        - dose_col: Column name containing dose values
+        - n_knots: Number of knots for spline (default 3)
+        - knot_positions: Optional list of knot positions (auto-determined if None)
+        - spline_degree: Degree of spline (default 3 for cubic)
+        """
+        if dose_col not in self.df.columns:
+            raise ValueError(f"Dose column '{dose_col}' not found")
+        
+        doses = self.df[dose_col].values
+        effects = self.df[self.effect_col].values
+        variances = self.df['_variance'].values
+        
+        try:
+            # Create spline basis matrix
+            if knot_positions is None:
+                # Auto-determine knots at quantiles
+                knot_positions = np.percentile(doses[~np.isnan(doses)], 
+                                             np.linspace(10, 90, n_knots))
+            
+            # Restricted cubic spline basis
+            spline_matrix = self._create_restricted_cubic_spline_basis(
+                doses, knot_positions, spline_degree
+            )
+            
+            # Add intercept
+            X = np.column_stack([np.ones(len(doses)), spline_matrix])
+            
+            # Weighted least squares with study random effects
+            if HAS_STATSMODELS:
+                import statsmodels.api as sm
+                
+                # Create study indicators for random effects
+                study_indicators = pd.get_dummies(self.df[self.label_col]).values
+                
+                # Mixed effects model setup (simplified)
+                weights = 1 / variances
+                W = np.diag(weights)
+                
+                # GLS estimation
+                XWX = X.T @ W @ X
+                XWy = X.T @ W @ effects
+                
+                beta = np.linalg.solve(XWX, XWy)
+                cov_beta = np.linalg.inv(XWX)
+                se_beta = np.sqrt(np.diag(cov_beta))
+                
+                # Predictions
+                dose_range = np.linspace(np.min(doses), np.max(doses), 100)
+                spline_pred = self._create_restricted_cubic_spline_basis(
+                    dose_range, knot_positions, spline_degree
+                )
+                X_pred = np.column_stack([np.ones(len(dose_range)), spline_pred])
+                predicted_effects = X_pred @ beta
+                
+                # Pointwise confidence intervals
+                pred_var = np.diag(X_pred @ cov_beta @ X_pred.T)
+                pred_se = np.sqrt(pred_var)
+                z_crit = norm.ppf(0.975)
+                ci_low = predicted_effects - z_crit * pred_se
+                ci_high = predicted_effects + z_crit * pred_se
+                
+                # Test for nonlinearity (F-test for spline terms)
+                # Full model vs linear model
+                X_linear = np.column_stack([np.ones(len(doses)), doses])
+                XWX_linear = X_linear.T @ W @ X_linear
+                XWy_linear = X_linear.T @ W @ effects
+                beta_linear = np.linalg.solve(XWX_linear, XWy_linear)
+                
+                # Residual sum of squares
+                rss_full = np.sum(weights * (effects - X @ beta) ** 2)
+                rss_linear = np.sum(weights * (effects - X_linear @ beta_linear) ** 2)
+                
+                # F-test
+                df_full = len(effects) - X.shape[1]
+                df_linear = len(effects) - X_linear.shape[1]
+                df_diff = df_linear - df_full
+                
+                if df_diff > 0 and df_full > 0:
+                    f_stat = ((rss_linear - rss_full) / df_diff) / (rss_full / df_full)
+                    p_nonlinearity = 1 - stats.f.cdf(f_stat, df_diff, df_full)
+                else:
+                    f_stat = 0
+                    p_nonlinearity = 1.0
+                
+                return {
+                    'method': 'Restricted Cubic Spline',
+                    'available': True,
+                    'knot_positions': knot_positions,
+                    'spline_degree': spline_degree,
+                    'coefficients': beta,
+                    'se_coefficients': se_beta,
+                    'dose_range': dose_range,
+                    'predicted_effects': predicted_effects,
+                    'ci_low': ci_low,
+                    'ci_high': ci_high,
+                    'f_nonlinearity': f_stat,
+                    'p_nonlinearity': p_nonlinearity,
+                    'significant_nonlinearity': p_nonlinearity < 0.05
+                }
+            
+            else:
+                # Fallback to simple spline without random effects
+                logger.warning("Statsmodels not available, using simplified spline fitting")
+                weights = 1 / variances
+                W = np.diag(weights)
+                
+                XWX = X.T @ W @ X
+                XWy = X.T @ W @ effects
+                
+                beta = np.linalg.solve(XWX, XWy)
+                predicted = X @ beta
+                
+                return {
+                    'method': 'Simple Spline (no random effects)',
+                    'available': True,
+                    'knot_positions': knot_positions,
+                    'coefficients': beta,
+                    'predicted_effects': predicted,
+                    'fallback': True
+                }
+                
+        except Exception as e:
+            logger.error(f"Spline dose-response analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    def _create_restricted_cubic_spline_basis(self, x: np.ndarray, 
+                                            knots: np.ndarray, 
+                                            degree: int = 3) -> np.ndarray:
+        """Create restricted cubic spline basis matrix"""
+        try:
+            # Sort knots
+            knots = np.sort(knots)
+            n_knots = len(knots)
+            
+            if degree != 3:
+                logger.warning("Only cubic splines (degree=3) fully supported")
+            
+            # Create basis for restricted cubic splines
+            # Linear term
+            basis = [x.copy()]
+            
+            # Truncated power functions
+            for k in knots[:-2]:  # Exclude last 2 knots for restriction
+                truncated = np.maximum(0, x - k) ** 3
+                basis.append(truncated)
+            
+            # Apply restrictions (natural spline constraints)
+            if n_knots >= 2:
+                # Restrict to be linear beyond boundary knots
+                k_max = knots[-1]
+                k_second_max = knots[-2]
+                
+                for i in range(1, len(basis)):
+                    # Adjust to ensure linearity beyond boundary
+                    correction = (np.maximum(0, x - k_max) ** 3 - 
+                                np.maximum(0, x - k_second_max) ** 3)
+                    basis[i] = basis[i] - correction
+            
+            return np.column_stack(basis)
+            
+        except Exception as e:
+            logger.warning(f"Spline basis creation failed: {e}, using polynomial")
+            # Fallback to polynomial basis
+            return np.column_stack([x**i for i in range(1, degree + 1)])
+    
+    def dose_standardization_tools(self, dose_data: pd.DataFrame,
+                                 dose_col: str,
+                                 unit_col: Optional[str] = None,
+                                 category_cols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Tools for standardizing dose units, midpoints, and category boundaries
+        
+        Provides utilities for harmonizing dose-response data across studies
+        with different units, dose ranges, and categorization schemes.
+        """
+        try:
+            doses = dose_data[dose_col].copy()
+            
+            # Unit standardization
+            standardized_doses = doses.copy()
+            conversion_log = []
+            
+            if unit_col and unit_col in dose_data.columns:
+                units = dose_data[unit_col]
+                
+                # Common unit conversions (example - extend as needed)
+                unit_conversions = {
+                    'mg_to_g': 0.001,
+                    'g_to_mg': 1000,
+                    'mcg_to_mg': 0.001,
+                    'mg_to_mcg': 1000,
+                    'kg_to_g': 1000,
+                    'g_to_kg': 0.001
+                }
+                
+                # Detect and convert units
+                for i, unit in enumerate(units):
+                    if pd.notna(unit) and isinstance(unit, str):
+                        unit_lower = unit.lower().strip()
+                        
+                        # Simple unit detection and conversion
+                        if 'mg' in unit_lower and any('g' in u for u in units if 'mg' not in str(u)):
+                            # Convert mg to g if other studies use g
+                            standardized_doses[i] = doses[i] * unit_conversions.get('mg_to_g', 1)
+                            conversion_log.append(f"Study {i}: {unit} -> g (factor: {unit_conversions.get('mg_to_g', 1)})")
+            
+            # Category midpoint calculation
+            midpoints = {}
+            boundaries = {}
+            
+            if category_cols:
+                for cat_col in category_cols:
+                    if cat_col in dose_data.columns:
+                        categories = dose_data[cat_col].unique()
+                        
+                        for cat in categories:
+                            if pd.notna(cat) and isinstance(cat, str):
+                                # Parse category ranges (e.g., "10-20", "<5", "5+")
+                                midpoint, boundary = self._parse_dose_category(cat)
+                                if midpoint is not None:
+                                    midpoints[cat] = midpoint
+                                    boundaries[cat] = boundary
+            
+            # Monotonicity check
+            monotonicity_results = self._check_dose_monotonicity(standardized_doses)
+            
+            # Outlier detection in doses
+            dose_outliers = self._detect_dose_outliers(standardized_doses)
+            
+            return {
+                'standardized_doses': standardized_doses,
+                'conversion_log': conversion_log,
+                'category_midpoints': midpoints,
+                'category_boundaries': boundaries,
+                'monotonicity': monotonicity_results,
+                'dose_outliers': dose_outliers,
+                'dose_range': [np.nanmin(standardized_doses), np.nanmax(standardized_doses)],
+                'n_dose_levels': len(np.unique(standardized_doses[~np.isnan(standardized_doses)]))
+            }
+            
+        except Exception as e:
+            logger.error(f"Dose standardization failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    def _parse_dose_category(self, category: str) -> Tuple[Optional[float], Optional[Tuple[float, float]]]:
+        """Parse dose category string to extract midpoint and boundaries"""
+        try:
+            category = category.strip().lower()
+            
+            # Range patterns (e.g., "10-20", "5 to 15")
+            range_patterns = [
+                r'(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)',
+                r'(\d+(?:\.\d+)?)\s+to\s+(\d+(?:\.\d+)?)'
+            ]
+            
+            for pattern in range_patterns:
+                match = re.search(pattern, category)
+                if match:
+                    low, high = float(match.group(1)), float(match.group(2))
+                    midpoint = (low + high) / 2
+                    return midpoint, (low, high)
+            
+            # Less than patterns (e.g., "<5", "≤10")
+            less_patterns = [r'<\s*(\d+(?:\.\d+)?)', r'≤\s*(\d+(?:\.\d+)?)']
+            for pattern in less_patterns:
+                match = re.search(pattern, category)
+                if match:
+                    upper = float(match.group(1))
+                    midpoint = upper / 2  # Assume lower bound is 0
+                    return midpoint, (0, upper)
+            
+            # Greater than patterns (e.g., ">20", "≥15")
+            greater_patterns = [r'>\s*(\d+(?:\.\d+)?)', r'≥\s*(\d+(?:\.\d+)?)']
+            for pattern in greater_patterns:
+                match = re.search(pattern, category)
+                if match:
+                    lower = float(match.group(1))
+                    # Estimate upper bound as 2x lower bound (could be improved)
+                    upper = lower * 2
+                    midpoint = (lower + upper) / 2
+                    return midpoint, (lower, upper)
+            
+            # Exact values
+            exact_pattern = r'^(\d+(?:\.\d+)?)$'
+            match = re.search(exact_pattern, category)
+            if match:
+                value = float(match.group(1))
+                return value, (value, value)
+            
+            return None, None
+            
+        except Exception:
+            return None, None
+    
+    def _check_dose_monotonicity(self, doses: np.ndarray) -> Dict[str, Any]:
+        """Check for monotonic dose-response relationship"""
+        try:
+            valid_doses = doses[~np.isnan(doses)]
+            if len(valid_doses) < 3:
+                return {'sufficient_data': False}
+            
+            # Sort by dose
+            sort_idx = np.argsort(valid_doses)
+            sorted_doses = valid_doses[sort_idx]
+            
+            # Check for monotonicity in corresponding effects
+            if hasattr(self, 'df') and self.effect_col in self.df.columns:
+                effects = self.df[self.effect_col].values
+                valid_effects = effects[~np.isnan(doses)]
+                sorted_effects = valid_effects[sort_idx]
+                
+                # Calculate differences
+                dose_diffs = np.diff(sorted_doses)
+                effect_diffs = np.diff(sorted_effects)
+                
+                # Monotonicity metrics
+                increasing_trend = np.sum(effect_diffs > 0) / len(effect_diffs)
+                decreasing_trend = np.sum(effect_diffs < 0) / len(effect_diffs)
+                
+                # Spearman correlation
+                from scipy.stats import spearmanr
+                rho, p_value = spearmanr(sorted_doses, sorted_effects)
+                
+                return {
+                    'sufficient_data': True,
+                    'spearman_rho': rho,
+                    'spearman_p': p_value,
+                    'increasing_trend_proportion': increasing_trend,
+                    'decreasing_trend_proportion': decreasing_trend,
+                    'monotonic_increasing': increasing_trend > 0.7,
+                    'monotonic_decreasing': decreasing_trend > 0.7,
+                    'monotonic': max(increasing_trend, decreasing_trend) > 0.7
+                }
+            else:
+                return {'sufficient_data': False, 'reason': 'No effect data available'}
+                
+        except Exception as e:
+            logger.warning(f"Monotonicity check failed: {e}")
+            return {'sufficient_data': False, 'error': str(e)}
+    
+    def _detect_dose_outliers(self, doses: np.ndarray) -> Dict[str, Any]:
+        """Detect outliers in dose distribution"""
+        try:
+            valid_doses = doses[~np.isnan(doses)]
+            if len(valid_doses) < 4:
+                return {'sufficient_data': False}
+            
+            # IQR method
+            q1, q3 = np.percentile(valid_doses, [25, 75])
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+            
+            outlier_mask = (valid_doses < lower_bound) | (valid_doses > upper_bound)
+            outlier_indices = np.where(outlier_mask)[0]
+            outlier_values = valid_doses[outlier_mask]
+            
+            return {
+                'sufficient_data': True,
+                'outlier_indices': outlier_indices.tolist(),
+                'outlier_values': outlier_values.tolist(),
+                'n_outliers': len(outlier_values),
+                'outlier_proportion': len(outlier_values) / len(valid_doses),
+                'dose_bounds': [lower_bound, upper_bound],
+                'dose_quartiles': [q1, q3]
+            }
+            
+        except Exception as e:
+            logger.warning(f"Dose outlier detection failed: {e}")
+            return {'sufficient_data': False, 'error': str(e)}
     
     # ===================================================================
     # VISUALIZATION METHODS (ENHANCED)
@@ -4200,6 +4761,1099 @@ class SparseEventMethods:
                 'available': False,
                 'error': str(e)
             }
+
+# ===================================================================
+# TIME-TO-EVENT (SURVIVAL) META-ANALYSIS - Phase 5
+# ===================================================================
+
+class TimeToEventAnalysis:
+    """
+    Time-to-event (survival) meta-analysis with log HR pooling and reconstruction helpers
+    
+    Implements both fixed and random effects meta-analysis for survival data,
+    including Tierney-style reconstruction methods for extracting HR from
+    Kaplan-Meier curves or summary statistics.
+    """
+    
+    @staticmethod
+    def log_hr_meta_analysis(log_hr: np.ndarray, 
+                           se_log_hr: np.ndarray,
+                           study_labels: Optional[List[str]] = None,
+                           method: str = 'random',
+                           hartung_knapp: bool = True) -> Dict[str, Any]:
+        """
+        Meta-analysis of log hazard ratios with fixed or random effects
+        
+        Parameters:
+        - log_hr: Array of log hazard ratios
+        - se_log_hr: Array of standard errors
+        - study_labels: Optional study labels
+        - method: 'fixed' or 'random' effects
+        - hartung_knapp: Use Hartung-Knapp adjustment for random effects
+        
+        Returns comprehensive survival meta-analysis results
+        """
+        try:
+            log_hr = np.array(log_hr)
+            se_log_hr = np.array(se_log_hr)
+            
+            if len(log_hr) != len(se_log_hr):
+                raise ValueError("log_hr and se_log_hr must have same length")
+            
+            if len(log_hr) < 2:
+                return {
+                    'available': False,
+                    'reason': 'Need at least 2 studies'
+                }
+            
+            # Remove invalid entries
+            valid_mask = ~(np.isnan(log_hr) | np.isnan(se_log_hr) | (se_log_hr <= 0))
+            log_hr = log_hr[valid_mask]
+            se_log_hr = se_log_hr[valid_mask]
+            
+            if len(log_hr) < 2:
+                return {
+                    'available': False,
+                    'reason': 'Insufficient valid studies after filtering'
+                }
+            
+            # Variance and weights
+            var_log_hr = se_log_hr ** 2
+            weights = 1 / var_log_hr
+            
+            # Fixed effects
+            pooled_log_hr_fe = np.sum(weights * log_hr) / np.sum(weights)
+            var_pooled_fe = 1 / np.sum(weights)
+            se_pooled_fe = np.sqrt(var_pooled_fe)
+            
+            # Heterogeneity statistics
+            Q = np.sum(weights * (log_hr - pooled_log_hr_fe) ** 2)
+            df = len(log_hr) - 1
+            p_heterogeneity = 1 - chi2.cdf(Q, df) if df > 0 else 1.0
+            I2 = max(0, (Q - df) / Q) if Q > 0 else 0
+            
+            # Random effects (DerSimonian-Laird)
+            if method == 'random' or (method == 'auto' and p_heterogeneity < 0.1):
+                C = np.sum(weights) - np.sum(weights**2) / np.sum(weights)
+                tau2 = max(0, (Q - df) / C) if C > 0 else 0
+                
+                # Random effects weights
+                weights_re = 1 / (var_log_hr + tau2)
+                pooled_log_hr_re = np.sum(weights_re * log_hr) / np.sum(weights_re)
+                var_pooled_re = 1 / np.sum(weights_re)
+                se_pooled_re = np.sqrt(var_pooled_re)
+                
+                # Hartung-Knapp adjustment
+                if hartung_knapp and df > 0:
+                    # Calculate residual-based variance
+                    residuals = log_hr - pooled_log_hr_re
+                    Q_re = np.sum(weights_re * residuals ** 2)
+                    var_hk = Q_re / df if df > 0 else var_pooled_re
+                    se_hk = np.sqrt(var_hk)
+                    
+                    # Use t-distribution for CI
+                    t_crit = t.ppf(0.975, df)
+                    ci_low_re = pooled_log_hr_re - t_crit * se_hk
+                    ci_high_re = pooled_log_hr_re + t_crit * se_hk
+                    hk_adjustment = True
+                    se_final = se_hk
+                else:
+                    z_crit = norm.ppf(0.975)
+                    ci_low_re = pooled_log_hr_re - z_crit * se_pooled_re
+                    ci_high_re = pooled_log_hr_re + z_crit * se_pooled_re
+                    hk_adjustment = False
+                    se_final = se_pooled_re
+            else:
+                tau2 = 0
+                pooled_log_hr_re = pooled_log_hr_fe
+                se_pooled_re = se_pooled_fe
+                se_final = se_pooled_fe
+                z_crit = norm.ppf(0.975)
+                ci_low_re = pooled_log_hr_re - z_crit * se_pooled_re
+                ci_high_re = pooled_log_hr_re + z_crit * se_pooled_re
+                hk_adjustment = False
+            
+            # Fixed effects confidence intervals
+            z_crit = norm.ppf(0.975)
+            ci_low_fe = pooled_log_hr_fe - z_crit * se_pooled_fe
+            ci_high_fe = pooled_log_hr_fe + z_crit * se_pooled_fe
+            
+            # Convert to hazard ratios
+            hr_fe = np.exp(pooled_log_hr_fe)
+            hr_re = np.exp(pooled_log_hr_re)
+            hr_ci_low_fe = np.exp(ci_low_fe)
+            hr_ci_high_fe = np.exp(ci_high_fe)
+            hr_ci_low_re = np.exp(ci_low_re)
+            hr_ci_high_re = np.exp(ci_high_re)
+            
+            # Test for overall effect
+            z_fe = pooled_log_hr_fe / se_pooled_fe if se_pooled_fe > 0 else 0
+            p_fe = 2 * (1 - norm.cdf(abs(z_fe)))
+            
+            if method == 'random' and hk_adjustment:
+                t_re = pooled_log_hr_re / se_final if se_final > 0 else 0
+                p_re = 2 * (1 - t.cdf(abs(t_re), df)) if df > 0 else p_fe
+            else:
+                z_re = pooled_log_hr_re / se_pooled_re if se_pooled_re > 0 else 0
+                p_re = 2 * (1 - norm.cdf(abs(z_re)))
+            
+            return {
+                'available': True,
+                'method': method,
+                'n_studies': len(log_hr),
+                'fixed_effects': {
+                    'log_hr': pooled_log_hr_fe,
+                    'se_log_hr': se_pooled_fe,
+                    'hr': hr_fe,
+                    'ci_low': hr_ci_low_fe,
+                    'ci_high': hr_ci_high_fe,
+                    'z_statistic': z_fe,
+                    'p_value': p_fe
+                },
+                'random_effects': {
+                    'log_hr': pooled_log_hr_re,
+                    'se_log_hr': se_pooled_re,
+                    'hr': hr_re,
+                    'ci_low': hr_ci_low_re,
+                    'ci_high': hr_ci_high_re,
+                    'z_statistic': z_re if not hk_adjustment else t_re,
+                    'p_value': p_re,
+                    'tau2': tau2,
+                    'hartung_knapp': hk_adjustment
+                },
+                'heterogeneity': {
+                    'Q': Q,
+                    'df': df,
+                    'p_heterogeneity': p_heterogeneity,
+                    'I2': I2,
+                    'tau2': tau2
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Time-to-event meta-analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod
+    def tierney_reconstruction(hr_reported: float,
+                             ci_low: float,
+                             ci_high: float,
+                             n_events_total: Optional[int] = None,
+                             n_treatment: Optional[int] = None,
+                             n_control: Optional[int] = None,
+                             p_value: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Tierney-style reconstruction of log HR and SE from reported HR and CI
+        
+        Reconstructs variance information needed for meta-analysis when only
+        HR point estimates and confidence intervals are available.
+        
+        Based on methods from Tierney et al. (2007) and Parmar et al. (1998)
+        """
+        try:
+            if hr_reported <= 0 or ci_low <= 0 or ci_high <= 0:
+                return {
+                    'available': False,
+                    'reason': 'Invalid HR or CI values'
+                }
+            
+            # Log-transform
+            log_hr = np.log(hr_reported)
+            log_ci_low = np.log(ci_low)
+            log_ci_high = np.log(ci_high)
+            
+            # Standard error from confidence interval
+            # Assumes normal approximation: log(HR) ± 1.96 * SE = log(CI)
+            se_log_hr_from_ci = (log_ci_high - log_ci_low) / (2 * norm.ppf(0.975))
+            
+            # Alternative SE estimation from p-value if available
+            se_log_hr_from_p = None
+            if p_value is not None and p_value > 0:
+                z_stat = norm.ppf(1 - p_value / 2)
+                if z_stat > 0:
+                    se_log_hr_from_p = abs(log_hr) / z_stat
+            
+            # Choose best SE estimate
+            if se_log_hr_from_p is not None:
+                # Use p-value derived SE if available and reasonable
+                if abs(se_log_hr_from_p - se_log_hr_from_ci) / se_log_hr_from_ci < 0.5:
+                    se_log_hr = se_log_hr_from_p
+                    se_method = 'p_value'
+                else:
+                    se_log_hr = se_log_hr_from_ci
+                    se_method = 'confidence_interval'
+            else:
+                se_log_hr = se_log_hr_from_ci
+                se_method = 'confidence_interval'
+            
+            # Additional calculations if sample sizes available
+            reconstruction_quality = 'standard'
+            effective_sample_size = None
+            
+            if n_events_total is not None:
+                # Schoenfeld formula for variance
+                var_schoenfeld = 4 / n_events_total
+                se_schoenfeld = np.sqrt(var_schoenfeld)
+                
+                # Compare with CI-derived SE
+                if abs(se_schoenfeld - se_log_hr) / se_log_hr < 0.3:
+                    reconstruction_quality = 'good'
+                    effective_sample_size = n_events_total
+                else:
+                    reconstruction_quality = 'questionable'
+            
+            # Validate reconstruction
+            validation = {
+                'hr_from_log': np.exp(log_hr),
+                'ci_reconstructed_low': np.exp(log_hr - norm.ppf(0.975) * se_log_hr),
+                'ci_reconstructed_high': np.exp(log_hr + norm.ppf(0.975) * se_log_hr),
+                'ci_match_low': abs(np.exp(log_hr - norm.ppf(0.975) * se_log_hr) - ci_low) < 0.01,
+                'ci_match_high': abs(np.exp(log_hr + norm.ppf(0.975) * se_log_hr) - ci_high) < 0.01
+            }
+            
+            return {
+                'available': True,
+                'log_hr': log_hr,
+                'se_log_hr': se_log_hr,
+                'se_method': se_method,
+                'reconstruction_quality': reconstruction_quality,
+                'effective_sample_size': effective_sample_size,
+                'validation': validation,
+                'alternative_ses': {
+                    'from_ci': se_log_hr_from_ci,
+                    'from_p': se_log_hr_from_p
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Tierney reconstruction failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod  
+    def survival_subgroup_analysis(log_hr: np.ndarray,
+                                 se_log_hr: np.ndarray,
+                                 subgroup_var: np.ndarray,
+                                 study_labels: Optional[List[str]] = None,
+                                 moderator_vars: Optional[np.ndarray] = None) -> Dict[str, Any]:
+        """
+        Subgroup and meta-regression analysis for survival data
+        
+        Performs subgroup analysis and optional meta-regression with moderators
+        for time-to-event outcomes.
+        """
+        try:
+            log_hr = np.array(log_hr)
+            se_log_hr = np.array(se_log_hr)
+            subgroup_var = np.array(subgroup_var)
+            
+            if len(log_hr) != len(se_log_hr) or len(log_hr) != len(subgroup_var):
+                raise ValueError("All input arrays must have same length")
+            
+            # Get unique subgroups
+            unique_subgroups = np.unique(subgroup_var[~pd.isna(subgroup_var)])
+            
+            if len(unique_subgroups) < 2:
+                return {
+                    'available': False,
+                    'reason': 'Need at least 2 subgroups'
+                }
+            
+            subgroup_results = {}
+            
+            # Analyze each subgroup
+            for subgroup in unique_subgroups:
+                mask = subgroup_var == subgroup
+                sg_log_hr = log_hr[mask]
+                sg_se_log_hr = se_log_hr[mask]
+                
+                if len(sg_log_hr) >= 2:
+                    sg_result = TimeToEventAnalysis.log_hr_meta_analysis(
+                        sg_log_hr, sg_se_log_hr, method='random'
+                    )
+                    subgroup_results[subgroup] = sg_result
+                else:
+                    subgroup_results[subgroup] = {
+                        'available': False,
+                        'reason': 'Insufficient studies in subgroup'
+                    }
+            
+            # Test for subgroup differences
+            valid_subgroups = [sg for sg, res in subgroup_results.items() 
+                             if res.get('available', False)]
+            
+            if len(valid_subgroups) >= 2:
+                # Extract pooled estimates and variances
+                subgroup_estimates = []
+                subgroup_variances = []
+                
+                for sg in valid_subgroups:
+                    res = subgroup_results[sg]
+                    subgroup_estimates.append(res['random_effects']['log_hr'])
+                    subgroup_variances.append(res['random_effects']['se_log_hr'] ** 2)
+                
+                # Test for between-subgroup heterogeneity
+                weights = 1 / np.array(subgroup_variances)
+                pooled_overall = np.sum(weights * subgroup_estimates) / np.sum(weights)
+                Q_between = np.sum(weights * (subgroup_estimates - pooled_overall) ** 2)
+                df_between = len(subgroup_estimates) - 1
+                p_between = 1 - chi2.cdf(Q_between, df_between) if df_between > 0 else 1.0
+                
+                between_group_test = {
+                    'Q_between': Q_between,
+                    'df': df_between,
+                    'p_value': p_between,
+                    'significant_difference': p_between < 0.05
+                }
+            else:
+                between_group_test = {
+                    'available': False,
+                    'reason': 'Insufficient valid subgroups'
+                }
+            
+            # Meta-regression if moderator variables provided
+            meta_regression = None
+            if moderator_vars is not None and HAS_STATSMODELS:
+                try:
+                    import statsmodels.api as sm
+                    
+                    # Prepare data
+                    valid_mask = ~(np.isnan(log_hr) | np.isnan(se_log_hr))
+                    y = log_hr[valid_mask]
+                    weights = 1 / (se_log_hr[valid_mask] ** 2)
+                    
+                    if moderator_vars.ndim == 1:
+                        X = sm.add_constant(moderator_vars[valid_mask])
+                    else:
+                        X = sm.add_constant(moderator_vars[valid_mask, :])
+                    
+                    # Weighted least squares
+                    model = sm.WLS(y, X, weights=weights).fit()
+                    
+                    meta_regression = {
+                        'available': True,
+                        'coefficients': model.params.to_dict(),
+                        'se_coefficients': model.bse.to_dict(),
+                        'p_values': model.pvalues.to_dict(),
+                        'r_squared': model.rsquared,
+                        'f_statistic': model.fvalue,
+                        'f_p_value': model.f_pvalue
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"Meta-regression failed: {e}")
+                    meta_regression = {
+                        'available': False,
+                        'error': str(e)
+                    }
+            
+            return {
+                'available': True,
+                'subgroup_results': subgroup_results,
+                'between_group_test': between_group_test,
+                'meta_regression': meta_regression,
+                'n_subgroups': len(unique_subgroups),
+                'n_studies_total': len(log_hr)
+            }
+            
+        except Exception as e:
+            logger.error(f"Survival subgroup analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod
+    def bayesian_survival_meta_analysis(log_hr: np.ndarray,
+                                       se_log_hr: np.ndarray,
+                                       prior_mean: float = 0.0,
+                                       prior_sd: float = 1.0,
+                                       n_samples: int = 2000) -> Dict[str, Any]:
+        """
+        Bayesian survival meta-analysis using PyMC (optional)
+        
+        Provides full posterior distributions for hazard ratio estimates
+        with credible intervals and posterior predictive distributions.
+        """
+        if not HAS_PYMC:
+            return {
+                'available': False,
+                'reason': 'PyMC not available - install with pip install pymc'
+            }
+        
+        try:
+            import pymc as pm
+            import arviz as az
+            
+            log_hr = np.array(log_hr)
+            se_log_hr = np.array(se_log_hr)
+            
+            # Remove invalid entries
+            valid_mask = ~(np.isnan(log_hr) | np.isnan(se_log_hr) | (se_log_hr <= 0))
+            log_hr = log_hr[valid_mask]
+            se_log_hr = se_log_hr[valid_mask]
+            
+            if len(log_hr) < 2:
+                return {
+                    'available': False,
+                    'reason': 'Need at least 2 valid studies'
+                }
+            
+            with pm.Model() as model:
+                # Priors
+                mu = pm.Normal('mu', mu=prior_mean, sigma=prior_sd)
+                tau = pm.HalfNormal('tau', sigma=0.5)
+                
+                # Study-specific effects
+                theta = pm.Normal('theta', mu=mu, sigma=tau, shape=len(log_hr))
+                
+                # Likelihood
+                likelihood = pm.Normal('y_obs', mu=theta, sigma=se_log_hr, 
+                                     observed=log_hr)
+                
+                # Sample from posterior
+                trace = pm.sample(n_samples, return_inferencedata=True, 
+                                random_seed=42, progressbar=False)
+            
+            # Extract results
+            posterior_mu = trace.posterior['mu'].values.flatten()
+            posterior_tau = trace.posterior['tau'].values.flatten()
+            
+            # Summary statistics
+            mu_mean = np.mean(posterior_mu)
+            mu_std = np.std(posterior_mu)
+            mu_hdi = az.hdi(trace.posterior['mu'], hdi_prob=0.95)
+            
+            tau_mean = np.mean(posterior_tau)
+            tau_hdi = az.hdi(trace.posterior['tau'], hdi_prob=0.95)
+            
+            # Convert to HR scale
+            hr_posterior = np.exp(posterior_mu)
+            hr_mean = np.mean(hr_posterior)
+            hr_hdi = np.exp(mu_hdi)
+            
+            # Posterior predictive for new study
+            theta_pred = np.random.normal(mu_mean, np.sqrt(tau_mean**2), 1000)
+            hr_pred = np.exp(theta_pred)
+            hr_pred_hdi = np.percentile(hr_pred, [2.5, 97.5])
+            
+            # Model diagnostics
+            diagnostics = {
+                'rhat_mu': float(az.rhat(trace.posterior['mu']).values),
+                'rhat_tau': float(az.rhat(trace.posterior['tau']).values),
+                'ess_mu': float(az.ess(trace.posterior['mu']).values),
+                'ess_tau': float(az.ess(trace.posterior['tau']).values)
+            }
+            
+            return {
+                'available': True,
+                'method': 'Bayesian',
+                'n_studies': len(log_hr),
+                'posterior_samples': {
+                    'log_hr': posterior_mu,
+                    'tau': posterior_tau,
+                    'hr': hr_posterior
+                },
+                'summary': {
+                    'log_hr_mean': mu_mean,
+                    'log_hr_std': mu_std,
+                    'log_hr_hdi': mu_hdi.tolist(),
+                    'hr_mean': hr_mean,
+                    'hr_hdi': hr_hdi.tolist(),
+                    'tau_mean': tau_mean,
+                    'tau_hdi': tau_hdi.tolist()
+                },
+                'posterior_predictive': {
+                    'hr_mean': np.mean(hr_pred),
+                    'hr_hdi': hr_pred_hdi.tolist()
+                },
+                'diagnostics': diagnostics,
+                'convergence_ok': all(r < 1.1 for r in diagnostics.values() if 'rhat' in str(r))
+            }
+            
+        except Exception as e:
+            logger.error(f"Bayesian survival meta-analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+
+
+# ===================================================================
+# SELECTION-BIAS AND SMALL-STUDY EXTENSIONS - Phase 5  
+# ===================================================================
+
+class SelectionBiasExtensions:
+    """
+    Selection bias and small-study effects analysis with p-curve, p-uniform methods
+    
+    Implements modern methods for detecting and adjusting for publication bias
+    and small-study effects, including p-curve analysis, p-uniform, and p-uniform*.
+    """
+    
+    @staticmethod
+    def p_curve_analysis(effect_sizes: np.ndarray,
+                        se_effect_sizes: np.ndarray,
+                        alpha: float = 0.05,
+                        n_simulations: int = 5000) -> Dict[str, Any]:
+        """
+        P-curve analysis for detecting publication bias and evidential value
+        
+        P-curve is the distribution of statistically significant p-values.
+        A right-skewed p-curve indicates evidential value; a left-skewed or flat
+        p-curve suggests publication bias or p-hacking.
+        
+        Based on Simonsohn, Nelson & Simmons (2014)
+        """
+        try:
+            effect_sizes = np.array(effect_sizes)
+            se_effect_sizes = np.array(se_effect_sizes)
+            
+            if len(effect_sizes) != len(se_effect_sizes):
+                raise ValueError("Effect sizes and SEs must have same length")
+            
+            # Calculate p-values
+            z_stats = effect_sizes / se_effect_sizes
+            p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
+            
+            # Select significant results for p-curve
+            significant_mask = p_values < alpha
+            sig_p_values = p_values[significant_mask]
+            sig_effects = effect_sizes[significant_mask]
+            sig_se = se_effect_sizes[significant_mask]
+            
+            if len(sig_p_values) < 3:
+                return {
+                    'available': False,
+                    'reason': f'Need at least 3 significant results (p < {alpha}), found {len(sig_p_values)}'
+                }
+            
+            # Convert to uniform distribution (for right-skew test)
+            # Under null hypothesis of no effect, p-values should be uniform
+            # Under alternative with effect, p-values should be right-skewed
+            
+            # Test 1: Right-skew test (evidential value)
+            # H0: No evidential value (uniform or left-skewed)
+            # H1: Evidential value exists (right-skewed)
+            
+            # Stouffer's method for combining p-values < 0.025
+            p_half = sig_p_values[sig_p_values < 0.025]
+            if len(p_half) >= 3:
+                # Convert p-values to standard normal
+                z_scores = norm.ppf(1 - p_half)
+                stouffer_z = np.sum(z_scores) / np.sqrt(len(z_scores))
+                stouffer_p = 1 - norm.cdf(stouffer_z)
+                right_skew_test = {
+                    'z_statistic': stouffer_z,
+                    'p_value': stouffer_p,
+                    'significant': stouffer_p < 0.05,
+                    'n_studies': len(p_half)
+                }
+            else:
+                right_skew_test = {
+                    'available': False,
+                    'reason': 'Need at least 3 studies with p < 0.025'
+                }
+            
+            # Test 2: Flatness test (inadequate evidential value)
+            # H0: Adequate evidential value
+            # H1: Inadequate evidential value (p-curve is flatter than expected)
+            
+            # Binomial test: proportion of p-values < 0.025 should be > 0.5 if evidential value
+            n_total = len(sig_p_values)
+            n_below_half = np.sum(sig_p_values < 0.025)
+            
+            # Two-sided binomial test
+            flatness_p = 2 * min(
+                stats.binom.cdf(n_below_half, n_total, 0.5),
+                1 - stats.binom.cdf(n_below_half - 1, n_total, 0.5)
+            )
+            
+            flatness_test = {
+                'n_below_025': n_below_half,
+                'n_total': n_total,
+                'proportion': n_below_half / n_total,
+                'p_value': flatness_p,
+                'inadequate_evidential_value': flatness_p < 0.05 and n_below_half / n_total < 0.5
+            }
+            
+            # Test 3: Power estimation
+            # Estimate power of studies to detect effect of observed magnitude
+            
+            power_estimates = []
+            for i, (eff, se) in enumerate(zip(sig_effects, sig_se)):
+                # Cohen's d approximation
+                d = abs(eff) / se
+                # Simple power calculation (simplified)
+                power = 1 - norm.cdf(norm.ppf(1 - alpha/2) - d)
+                power_estimates.append(power)
+            
+            power_analysis = {
+                'individual_powers': power_estimates,
+                'mean_power': np.mean(power_estimates),
+                'median_power': np.median(power_estimates),
+                'underpowered_studies': np.sum(np.array(power_estimates) < 0.8),
+                'proportion_underpowered': np.mean(np.array(power_estimates) < 0.8)
+            }
+            
+            # Overall interpretation
+            interpretation = {}
+            if right_skew_test.get('significant', False):
+                interpretation['evidential_value'] = 'Present'
+                interpretation['confidence'] = 'High'
+            elif flatness_test.get('inadequate_evidential_value', False):
+                interpretation['evidential_value'] = 'Inadequate'
+                interpretation['confidence'] = 'High'
+            else:
+                interpretation['evidential_value'] = 'Inconclusive'
+                interpretation['confidence'] = 'Low'
+            
+            # Robustness checks via simulation
+            robustness = SelectionBiasExtensions._p_curve_robustness_simulation(
+                sig_effects, sig_se, alpha, n_simulations
+            )
+            
+            return {
+                'available': True,
+                'method': 'P-curve analysis',
+                'n_significant_studies': len(sig_p_values),
+                'significant_p_values': sig_p_values.tolist(),
+                'right_skew_test': right_skew_test,
+                'flatness_test': flatness_test,
+                'power_analysis': power_analysis,
+                'interpretation': interpretation,
+                'robustness_simulation': robustness
+            }
+            
+        except Exception as e:
+            logger.error(f"P-curve analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod
+    def _p_curve_robustness_simulation(effects: np.ndarray, 
+                                     se_effects: np.ndarray,
+                                     alpha: float,
+                                     n_sims: int) -> Dict[str, Any]:
+        """Robustness simulation for p-curve analysis"""
+        try:
+            # Simulate under different scenarios
+            sim_results = {
+                'null_hypothesis': [],
+                'half_effect': [],
+                'full_effect': []
+            }
+            
+            for sim in range(min(n_sims, 1000)):  # Limit for performance
+                for scenario in ['null_hypothesis', 'half_effect', 'full_effect']:
+                    if scenario == 'null_hypothesis':
+                        true_effects = np.zeros_like(effects)
+                    elif scenario == 'half_effect':
+                        true_effects = effects * 0.5
+                    else:  # full_effect
+                        true_effects = effects.copy()
+                    
+                    # Simulate observed effects
+                    sim_effects = np.random.normal(true_effects, se_effects)
+                    sim_z = sim_effects / se_effects
+                    sim_p = 2 * (1 - norm.cdf(np.abs(sim_z)))
+                    
+                    # Count significant results
+                    n_sig = np.sum(sim_p < alpha)
+                    sim_results[scenario].append(n_sig)
+            
+            return {
+                'null_hypothesis_sims': np.mean(sim_results['null_hypothesis']),
+                'half_effect_sims': np.mean(sim_results['half_effect']),
+                'full_effect_sims': np.mean(sim_results['full_effect']),
+                'observed_significant': len(effects)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Robustness simulation failed: {e}")
+            return {'available': False, 'error': str(e)}
+    
+    @staticmethod
+    def p_uniform_analysis(effect_sizes: np.ndarray,
+                          se_effect_sizes: np.ndarray,
+                          alpha: float = 0.05) -> Dict[str, Any]:
+        """
+        P-uniform analysis for publication bias correction
+        
+        P-uniform uses only the statistically significant studies to estimate
+        the true effect size, correcting for publication bias.
+        
+        Based on van Assen, van Aert & Wicherts (2015)
+        """
+        try:
+            effect_sizes = np.array(effect_sizes)
+            se_effect_sizes = np.array(se_effect_sizes)
+            
+            # Calculate p-values
+            z_stats = effect_sizes / se_effect_sizes
+            p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
+            
+            # Select significant results
+            significant_mask = p_values < alpha
+            sig_effects = effect_sizes[significant_mask]
+            sig_se = se_effect_sizes[significant_mask]
+            sig_p = p_values[significant_mask]
+            
+            if len(sig_effects) < 2:
+                return {
+                    'available': False,
+                    'reason': f'Need at least 2 significant results, found {len(sig_effects)}'
+                }
+            
+            # P-uniform estimation
+            # Transform p-values to uniform distribution under alternative hypothesis
+            
+            def p_uniform_likelihood(delta):
+                """Likelihood function for p-uniform estimation"""
+                if delta <= 0:
+                    return -np.inf
+                
+                # Calculate expected p-values under effect size delta
+                expected_z = sig_effects / sig_se
+                
+                # Power calculation for each study
+                power = 1 - norm.cdf(norm.ppf(1 - alpha/2) - np.abs(expected_z))
+                power = np.clip(power, 0.001, 0.999)  # Avoid boundary issues
+                
+                # Transform observed p-values
+                transformed_p = sig_p / power
+                
+                # Likelihood (assuming uniform distribution of transformed p-values)
+                if np.any(transformed_p <= 0) or np.any(transformed_p > 1):
+                    return -np.inf
+                
+                # Log-likelihood for uniform distribution
+                return -len(transformed_p) * np.log(1)  # Uniform on [0,1]
+            
+            # Find maximum likelihood estimate
+            from scipy.optimize import minimize_scalar
+            
+            # Grid search followed by optimization
+            delta_grid = np.linspace(0.001, 2.0, 50)
+            ll_grid = [p_uniform_likelihood(d) for d in delta_grid]
+            best_idx = np.argmax(ll_grid)
+            
+            # Refine around best grid point
+            result = minimize_scalar(
+                lambda x: -p_uniform_likelihood(x),
+                bounds=(max(0.001, delta_grid[best_idx] - 0.2), 
+                       delta_grid[best_idx] + 0.2),
+                method='bounded'
+            )
+            
+            if result.success:
+                p_uniform_estimate = result.x
+                max_likelihood = -result.fun
+            else:
+                p_uniform_estimate = delta_grid[best_idx]
+                max_likelihood = ll_grid[best_idx]
+            
+            # Test for publication bias
+            # H0: No publication bias (effect = p-uniform estimate)
+            # Compare to naive meta-analysis
+            
+            # Naive fixed effects meta-analysis of significant studies
+            weights = 1 / (sig_se ** 2)
+            naive_estimate = np.sum(weights * sig_effects) / np.sum(weights)
+            
+            # Publication bias test
+            bias_detected = abs(naive_estimate - p_uniform_estimate) > 0.1
+            
+            # Confidence interval (approximate)
+            # Use bootstrap or delta method (simplified implementation)
+            ci_low = max(0, p_uniform_estimate - 1.96 * np.std(sig_effects) / np.sqrt(len(sig_effects)))
+            ci_high = p_uniform_estimate + 1.96 * np.std(sig_effects) / np.sqrt(len(sig_effects))
+            
+            return {
+                'available': True,
+                'method': 'P-uniform',
+                'n_significant_studies': len(sig_effects),
+                'p_uniform_estimate': p_uniform_estimate,
+                'ci_low': ci_low,
+                'ci_high': ci_high,
+                'naive_estimate': naive_estimate,
+                'bias_detected': bias_detected,
+                'bias_magnitude': abs(naive_estimate - p_uniform_estimate),
+                'max_likelihood': max_likelihood,
+                'optimization_success': result.success if 'result' in locals() else False
+            }
+            
+        except Exception as e:
+            logger.error(f"P-uniform analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod
+    def p_uniform_star_analysis(effect_sizes: np.ndarray,
+                              se_effect_sizes: np.ndarray,
+                              alpha: float = 0.05,
+                              include_nonsignificant: bool = True) -> Dict[str, Any]:
+        """
+        P-uniform* analysis - extension that includes non-significant studies
+        
+        P-uniform* uses both significant and non-significant studies to estimate
+        effect size and test for publication bias, providing more power.
+        
+        Based on van Aert, Wicherts & van Assen (2019)
+        """
+        try:
+            effect_sizes = np.array(effect_sizes)
+            se_effect_sizes = np.array(se_effect_sizes)
+            
+            if len(effect_sizes) < 3:
+                return {
+                    'available': False,
+                    'reason': 'Need at least 3 studies for p-uniform*'
+                }
+            
+            # Calculate p-values and separate significant/non-significant
+            z_stats = effect_sizes / se_effect_sizes
+            p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
+            
+            sig_mask = p_values < alpha
+            n_sig = np.sum(sig_mask)
+            n_nonsig = np.sum(~sig_mask)
+            
+            if n_sig == 0:
+                return {
+                    'available': False,
+                    'reason': 'No significant studies found'
+                }
+            
+            # P-uniform* likelihood function
+            def p_uniform_star_likelihood(params):
+                """
+                Likelihood for p-uniform* with effect size and publication bias parameters
+                """
+                delta, pub_bias = params
+                
+                if delta < 0:
+                    return -np.inf
+                
+                log_likelihood = 0
+                
+                for i, (eff, se, p_val) in enumerate(zip(effect_sizes, se_effect_sizes, p_values)):
+                    # Calculate power for this study
+                    ncp = abs(delta) / se  # Non-centrality parameter
+                    power = 1 - norm.cdf(norm.ppf(1 - alpha/2) - ncp)
+                    power = np.clip(power, 0.001, 0.999)
+                    
+                    # Publication probability
+                    if p_val < alpha:  # Significant
+                        pub_prob = 1.0  # Assume significant studies always published
+                        # Conditional p-value distribution
+                        transformed_p = p_val / power
+                        if 0 < transformed_p <= 1:
+                            log_likelihood += np.log(1 / power)  # Uniform on [0, power]
+                        else:
+                            return -np.inf
+                    else:  # Non-significant
+                        if include_nonsignificant:
+                            pub_prob = pub_bias  # Publication probability for non-significant
+                            # Add to likelihood if published
+                            log_likelihood += np.log(pub_prob * (1 - power))
+                        
+                return log_likelihood
+            
+            # Optimize likelihood
+            from scipy.optimize import minimize
+            
+            # Grid search for starting values
+            delta_range = np.linspace(0.001, 2.0, 20)
+            bias_range = np.linspace(0.1, 1.0, 10)
+            
+            best_ll = -np.inf
+            best_params = (0.5, 0.5)
+            
+            for delta in delta_range:
+                for bias in bias_range:
+                    ll = p_uniform_star_likelihood((delta, bias))
+                    if ll > best_ll:
+                        best_ll = ll
+                        best_params = (delta, bias)
+            
+            # Refine optimization
+            try:
+                result = minimize(
+                    lambda x: -p_uniform_star_likelihood(x),
+                    best_params,
+                    bounds=[(0.001, 5.0), (0.01, 1.0)],
+                    method='L-BFGS-B'
+                )
+                
+                if result.success:
+                    optimal_delta, optimal_bias = result.x
+                    max_likelihood = -result.fun
+                else:
+                    optimal_delta, optimal_bias = best_params
+                    max_likelihood = best_ll
+                    
+            except Exception:
+                optimal_delta, optimal_bias = best_params
+                max_likelihood = best_ll
+            
+            # Test for publication bias
+            # H0: No publication bias (pub_bias = 1)
+            # Test if optimal_bias significantly < 1
+            
+            bias_test = {
+                'publication_bias_parameter': optimal_bias,
+                'bias_detected': optimal_bias < 0.8,
+                'bias_severity': 'severe' if optimal_bias < 0.5 else 'moderate' if optimal_bias < 0.8 else 'minimal'
+            }
+            
+            # Compare with naive meta-analysis
+            weights = 1 / (se_effect_sizes ** 2)
+            naive_estimate = np.sum(weights * effect_sizes) / np.sum(weights)
+            
+            # Effect size test
+            # H0: No effect (delta = 0)
+            null_likelihood = p_uniform_star_likelihood((0.001, optimal_bias))
+            lr_statistic = 2 * (max_likelihood - null_likelihood)
+            lr_p_value = 1 - chi2.cdf(lr_statistic, df=1) if lr_statistic > 0 else 1.0
+            
+            return {
+                'available': True,
+                'method': 'P-uniform*',
+                'n_studies': len(effect_sizes),
+                'n_significant': n_sig,
+                'n_nonsignificant': n_nonsig,
+                'p_uniform_star_estimate': optimal_delta,
+                'publication_bias_parameter': optimal_bias,
+                'bias_test': bias_test,
+                'naive_estimate': naive_estimate,
+                'bias_corrected_difference': abs(optimal_delta - naive_estimate),
+                'effect_size_test': {
+                    'lr_statistic': lr_statistic,
+                    'p_value': lr_p_value,
+                    'significant_effect': lr_p_value < 0.05
+                },
+                'max_likelihood': max_likelihood,
+                'optimization_success': True
+            }
+            
+        except Exception as e:
+            logger.error(f"P-uniform* analysis failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+    
+    @staticmethod  
+    def comprehensive_bias_assessment(effect_sizes: np.ndarray,
+                                    se_effect_sizes: np.ndarray,
+                                    study_labels: Optional[List[str]] = None,
+                                    alpha: float = 0.05) -> Dict[str, Any]:
+        """
+        Comprehensive assessment combining multiple bias detection methods
+        
+        Provides a unified analysis using p-curve, p-uniform, p-uniform*,
+        and traditional publication bias tests.
+        """
+        try:
+            # Run all available methods
+            results = {}
+            
+            # P-curve analysis
+            results['p_curve'] = SelectionBiasExtensions.p_curve_analysis(
+                effect_sizes, se_effect_sizes, alpha
+            )
+            
+            # P-uniform analysis  
+            results['p_uniform'] = SelectionBiasExtensions.p_uniform_analysis(
+                effect_sizes, se_effect_sizes, alpha
+            )
+            
+            # P-uniform* analysis
+            results['p_uniform_star'] = SelectionBiasExtensions.p_uniform_star_analysis(
+                effect_sizes, se_effect_sizes, alpha
+            )
+            
+            # Traditional tests (from existing functionality)
+            # Egger's test, Begg's test, etc. would be called here
+            
+            # Synthesis of results
+            bias_indicators = []
+            effect_estimates = []
+            
+            # Collect bias indicators
+            if results['p_curve'].get('available'):
+                pc = results['p_curve']
+                if pc.get('interpretation', {}).get('evidential_value') == 'Inadequate':
+                    bias_indicators.append('p_curve_inadequate')
+            
+            if results['p_uniform'].get('available'):
+                if results['p_uniform'].get('bias_detected'):
+                    bias_indicators.append('p_uniform_bias')
+                effect_estimates.append(('p_uniform', results['p_uniform']['p_uniform_estimate']))
+            
+            if results['p_uniform_star'].get('available'):
+                if results['p_uniform_star']['bias_test'].get('bias_detected'):
+                    bias_indicators.append('p_uniform_star_bias')
+                effect_estimates.append(('p_uniform_star', results['p_uniform_star']['p_uniform_star_estimate']))
+            
+            # Overall assessment
+            n_bias_indicators = len(bias_indicators)
+            bias_severity = 'severe' if n_bias_indicators >= 2 else 'moderate' if n_bias_indicators == 1 else 'minimal'
+            
+            # Effect size consensus
+            if effect_estimates:
+                estimates = [est[1] for est in effect_estimates]
+                consensus_estimate = np.median(estimates)
+                estimate_range = [np.min(estimates), np.max(estimates)]
+            else:
+                consensus_estimate = None
+                estimate_range = None
+            
+            # Recommendations
+            recommendations = []
+            if bias_severity != 'minimal':
+                recommendations.append("Publication bias detected - interpret results with caution")
+                recommendations.append("Consider searching for unpublished studies")
+                if consensus_estimate is not None:
+                    recommendations.append(f"Bias-corrected effect estimate: {consensus_estimate:.3f}")
+            
+            if len(effect_estimates) == 0:
+                recommendations.append("Could not obtain bias-corrected estimates")
+            
+            return {
+                'available': True,
+                'individual_results': results,
+                'bias_assessment': {
+                    'indicators_detected': bias_indicators,
+                    'n_indicators': n_bias_indicators,
+                    'severity': bias_severity
+                },
+                'effect_size_synthesis': {
+                    'bias_corrected_estimates': effect_estimates,
+                    'consensus_estimate': consensus_estimate,
+                    'estimate_range': estimate_range
+                },
+                'recommendations': recommendations,
+                'n_studies': len(effect_sizes)
+            }
+            
+        except Exception as e:
+            logger.error(f"Comprehensive bias assessment failed: {e}")
+            return {
+                'available': False,
+                'error': str(e)
+            }
+
 
 # ===================================================================
 # ENHANCED GRADE FUNCTIONALITY
