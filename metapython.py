@@ -146,6 +146,25 @@ except ImportError:
     HAS_MATPLOTLIB_PATCHES = False
 
 # ===================================================================
+# UTILITY FUNCTIONS
+# ===================================================================
+
+def fmt_num(value, fmt="{:.3f}") -> str:
+    """Safely format numeric values; return 'N/A' for None and str(value) for non-numeric."""
+    if value is None:
+        return "N/A"
+    try:
+        v = float(value)
+        return fmt.format(v)
+    except Exception:
+        return str(value)
+
+# Configure matplotlib backend for headless environments
+import os as _os
+if not _os.environ.get("MPLBACKEND"):
+    _os.environ["MPLBACKEND"] = "Agg"
+
+# ===================================================================
 # RESULT DATACLASSES FOR STRUCTURED OUTPUT
 # ===================================================================
 
@@ -3174,7 +3193,7 @@ def run_unified_demo():
     print(f"Generated comprehensive dataset: {len(demo_data)} studies")
     print(f"True effect: {true_effect}, Between-study SD: {between_study_sd}")
     print(f"Simulated conflicts: {len(np.unique(clusters))} research groups")
-    print(f"Effect range: {min(observed_effects):.3f} to {max(observed_effects):.3f}")
+    print(f"Effect range: {fmt_num(min(observed_effects))} to {fmt_num(max(observed_effects))}")
     
     # ===================================================================
     # 1. CORE UNIFIED ANALYSIS
@@ -3218,8 +3237,9 @@ def run_unified_demo():
     influential = loo_results[loo_results['influential']]
     print(f"Leave-one-out: {len(influential)} influential studies")
     if not influential.empty:
+        effect_change = influential.iloc[0]['effect_change']
         print(f"Most influential: {influential.iloc[0]['excluded_study']} "
-              f"(change: {influential.iloc[0]['effect_change']:.3f})")
+              f"(change: {fmt_num(effect_change)})")
     
     # Influence diagnostics
     influence_data = meta.influence_diagnostics()
@@ -3236,12 +3256,14 @@ def run_unified_demo():
         bias = meta.results.bias_assessment
         
         if hasattr(bias, 'egger'):
-            print(f"Egger test p-value: {bias.egger.get('p_value', 'N/A'):.3f}")
+            p = bias.egger.get('p_value', None)
+            print(f"Egger test p-value: {fmt_num(p)}")
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
             if pet_peese.get('success', True):
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
+                corrected = pet_peese.get('corrected_effect', None)
+                print(f"PET-PEESE corrected effect: {fmt_num(corrected)}")
         
         if hasattr(bias, 'trim_fill'):
             trim_fill = bias.trim_fill
@@ -3263,8 +3285,8 @@ def run_unified_demo():
         if hasattr(conflict, 'conflicting'):
             print(f"Conflicts detected: {conflict.conflicting}")
             print(f"Number of clusters: {conflict.k}")
-            print(f"Silhouette score: {conflict.silhouette:.3f}")
-            print(f"Effect range: {conflict.delta:.3f}")
+            print(f"Silhouette score: {fmt_num(getattr(conflict, 'silhouette', None))}")
+            print(f"Effect range: {fmt_num(getattr(conflict, 'delta', None))}")
     
     # ===================================================================
     # 5. MULTIVERSE ANALYSIS
@@ -3274,7 +3296,7 @@ def run_unified_demo():
     
     multiverse_results = meta.multiverse_analysis()
     effect_range = multiverse_results['effect'].max() - multiverse_results['effect'].min()
-    print(f"Multiverse analysis: Effect range = {effect_range:.3f}")
+    print(f"Multiverse analysis: Effect range = {fmt_num(effect_range)}")
     print(f"Number of specifications: {len(multiverse_results)}")
     
     # ===================================================================
@@ -3285,7 +3307,7 @@ def run_unified_demo():
     
     missing_results = meta.missing_study_sensitivity(n_max=3)
     max_change = missing_results['effect_change'].abs().max()
-    print(f"Missing study sensitivity: Max effect change = {max_change:.3f}")
+    print(f"Missing study sensitivity: Max effect change = {fmt_num(max_change)}")
     
     # ===================================================================
     # 7. SEQUENTIAL ANALYSIS
@@ -3297,8 +3319,8 @@ def run_unified_demo():
     cumulative = meta.cumulative_analysis(sort_by='year')
     final_effect = cumulative.iloc[-1]['cumulative_effect']
     effect_evolution = cumulative.iloc[-1]['effect_change']
-    print(f"Cumulative analysis: Final effect = {final_effect:.3f}")
-    print(f"Effect evolution: {effect_evolution:.3f}")
+    print(f"Cumulative analysis: Final effect = {fmt_num(final_effect)}")
+    print(f"Effect evolution: {fmt_num(effect_evolution)}")
     
     # Trial Sequential Analysis
     tsa_results = meta.trial_sequential_analysis(target_effect=0.3)
@@ -3312,8 +3334,11 @@ def run_unified_demo():
     print("-" * 27)
     
     dose_results = meta.dose_response_analysis('dose_mg', model_type='linear')
-    print(f"Dose-response slope: {dose_results['slope']:.4f} (p = {dose_results['p_slope']:.3f})")
-    print(f"R² = {dose_results['r_squared']:.3f}")
+    slope = dose_results.get('slope', None)
+    p_slope = dose_results.get('p_slope', None)
+    r_squared = dose_results.get('r_squared', None)
+    print(f"Dose-response slope: {fmt_num(slope, '{:.4f}')} (p = {fmt_num(p_slope)})")
+    print(f"R² = {fmt_num(r_squared)}")
     
     # ===================================================================
     # 9. BAYESIAN METHODS
@@ -3325,8 +3350,10 @@ def run_unified_demo():
         try:
             bayes_results = meta.bayesian_stacking(chains=2, draws=500)
             if bayes_results.get('success', False):
-                print(f"Bayesian posterior mean: {bayes_results['posterior_mean']:.3f}")
-                print(f"Posterior SD: {bayes_results['posterior_sd']:.3f}")
+                posterior_mean = bayes_results.get('posterior_mean', None)
+                posterior_sd = bayes_results.get('posterior_sd', None)
+                print(f"Bayesian posterior mean: {fmt_num(posterior_mean)}")
+                print(f"Posterior SD: {fmt_num(posterior_sd)}")
             else:
                 print("Bayesian analysis failed or unavailable")
         except Exception as e:
@@ -3357,8 +3384,12 @@ def run_unified_demo():
         true_effect=0.3, n_simulations=20, bias_scenario='publication')
     sim_df = sim_results['simulation_results']
     if not sim_df.empty:
-        print(f"Simulation study: Bias range = {sim_df['bias'].min():.4f} to {sim_df['bias'].max():.4f}")
-        print(f"Coverage probability range: {sim_df['coverage_prob'].min():.3f} to {sim_df['coverage_prob'].max():.3f}")
+        bias_min = sim_df['bias'].min()
+        bias_max = sim_df['bias'].max()
+        coverage_min = sim_df['coverage_prob'].min()
+        coverage_max = sim_df['coverage_prob'].max()
+        print(f"Simulation study: Bias range = {fmt_num(bias_min, '{:.4f}')} to {fmt_num(bias_max, '{:.4f}')}")
+        print(f"Coverage probability range: {fmt_num(coverage_min)} to {fmt_num(coverage_max)}")
     
     # ===================================================================
     # 12. LIVING META-ANALYSIS SETUP
@@ -3391,7 +3422,10 @@ def run_unified_demo():
         diagnostic_plots['influence_plot'].savefig('influence_plot.png', dpi=150, bbox_inches='tight')
         diagnostic_plots['cumulative_plot'].savefig('cumulative_plot.png', dpi=150, bbox_inches='tight')
         
-        plt.close('all')
+        try:
+            plt.close('all')
+        except Exception:
+            pass  # Ignore errors when closing plots
         print("All plots created successfully")
         
     except Exception as e:
