@@ -3125,19 +3125,27 @@ class EnhancedGRADE:
         return pd.DataFrame(grade_data)
 
 # ===================================================================
-# COMPREHENSIVE DEMO FUNCTION - FIXED INDENTATION
+# HELPER UTILITIES FOR DEMO MODULARITY
 # ===================================================================
 
-def run_unified_demo():
-    """Comprehensive demonstration of all unified capabilities including new modules"""
-    
-    print("=" * 90)
-    print("PyMeta-CBAMM Unified Suite v3.0 - COMPLETE FEATURE DEMONSTRATION")
-    print("=" * 90)
+def ensure_dir(path: str) -> None:
+    """Ensure directory exists, create if necessary"""
+    os.makedirs(path, exist_ok=True)
 
-    # Generate realistic demo data with enhanced characteristics
-    np.random.seed(42)
-    n_studies = 25
+def print_section(title: str, width: int = 90) -> None:
+    """Print a standardized section header"""
+    print("=" * width)
+    print(title)
+    print("=" * width)
+
+def print_subsection(title: str, underline_char: str = "-") -> None:
+    """Print a standardized subsection header"""
+    print(f"\n{title}")
+    print(underline_char * len(title))
+
+def generate_demo_data(n_studies: int = 25, seed: int = 42) -> pd.DataFrame:
+    """Generate comprehensive demo dataset for meta-analysis demonstration"""
+    np.random.seed(seed)
     true_effect = 0.4
     between_study_sd = 0.3
     
@@ -3176,12 +3184,55 @@ def run_unified_demo():
     print(f"Simulated conflicts: {len(np.unique(clusters))} research groups")
     print(f"Effect range: {min(observed_effects):.3f} to {max(observed_effects):.3f}")
     
-    # ===================================================================
-    # 1. CORE UNIFIED ANALYSIS
-    # ===================================================================
-    print(f"\n1. CORE UNIFIED ANALYSIS")
-    print("-" * 30)
+    return demo_data
+
+def print_analysis_summary(meta) -> None:
+    """Print standardized analysis summary and interpretation"""
+    print(f"Analysis completed: {meta}")
+    print(f"Interpretation: {meta.interpret_results()}")
     
+    # Summary table
+    summary = meta.summary_table()
+    print(f"\nSummary Table:")
+    print(summary.to_string(index=False))
+
+def save_plots(meta, output_dir: str = ".") -> None:
+    """Save visualization plots with error handling"""
+    ensure_dir(output_dir)
+    
+    try:
+        # Create plots
+        forest_fig = meta.create_forest_plot(show_weights=True)
+        funnel_fig = meta.create_funnel_plot(enhanced=True, include_bias_methods=True)
+        diagnostic_plots = meta.create_diagnostic_plots()
+        
+        # Save plots
+        forest_fig.savefig(os.path.join(output_dir, 'unified_forest_plot.png'), dpi=150, bbox_inches='tight')
+        funnel_fig.savefig(os.path.join(output_dir, 'unified_funnel_plot.png'), dpi=150, bbox_inches='tight')
+        diagnostic_plots['influence_plot'].savefig(os.path.join(output_dir, 'influence_plot.png'), dpi=150, bbox_inches='tight')
+        diagnostic_plots['cumulative_plot'].savefig(os.path.join(output_dir, 'cumulative_plot.png'), dpi=150, bbox_inches='tight')
+        
+        plt.close('all')
+        print("All plots created successfully")
+        
+    except Exception as e:
+        print(f"Visualization failed: {e}")
+
+def save_report(meta, output_dir: str = ".") -> None:
+    """Save comprehensive text report with error handling"""
+    ensure_dir(output_dir)
+    
+    try:
+        report = meta.comprehensive_report()
+        report_path = os.path.join(output_dir, 'unified_meta_report.txt')
+        with open(report_path, 'w') as f:
+            f.write(report)
+        print(f"Comprehensive report saved to '{report_path}'")
+    except Exception as e:
+        print(f"Report saving failed: {e}")
+
+def run_core_analysis(demo_data: pd.DataFrame) -> 'UnifiedMetaAnalysis':
+    """Run core unified meta-analysis"""
     config = UnifiedMetaConfig(
         tau2_method='REML', 
         use_hksj=True,
@@ -3190,6 +3241,13 @@ def run_unified_demo():
         bayesian_draws=500
     )
     
+    # Check if optional dependencies are available
+    try:
+        from sklearn.cluster import KMeans
+        include_conflicts = True
+    except ImportError:
+        include_conflicts = False
+    
     meta = UnifiedMetaAnalysis(
         data=demo_data,
         effect_col='effect_size',
@@ -3197,21 +3255,13 @@ def run_unified_demo():
         label_col='study_id',
         subgroup_col='intervention_type',
         config=config
-    ).analyze(include_conflicts=True, include_bias_tests=True)
+    ).analyze(include_conflicts=include_conflicts, include_bias_tests=True)
     
-    print(f"Analysis completed: {meta}")
-    print(f"Interpretation: {meta.interpret_results()}")
-    
-    # Summary table
-    summary = meta.summary_table()
-    print(f"\nSummary Table:")
-    print(summary.to_string(index=False))
-    
-    # ===================================================================
-    # 2. ENHANCED DIAGNOSTICS
-    # ===================================================================
-    print(f"\n2. ENHANCED DIAGNOSTICS")
-    print("-" * 25)
+    return meta
+
+def run_diagnostics(meta) -> Dict[str, Any]:
+    """Run enhanced diagnostics analysis"""
+    print_subsection("2. ENHANCED DIAGNOSTICS", "-")
     
     # Leave-one-out
     loo_results = meta.leave_one_out_analysis()
@@ -3226,38 +3276,52 @@ def run_unified_demo():
     high_influence = influence_data[influence_data['influential']]
     print(f"Influence diagnostics: {len(high_influence)} studies with high influence")
     
-    # ===================================================================
-    # 3. COMPREHENSIVE BIAS ASSESSMENT
-    # ===================================================================
-    print(f"\n3. COMPREHENSIVE BIAS ASSESSMENT")
-    print("-" * 35)
+    return {
+        'influential_studies': len(influential),
+        'high_influence_studies': len(high_influence),
+        'loo_results': loo_results,
+        'influence_data': influence_data
+    }
+
+def run_bias_assessment(meta) -> Dict[str, Any]:
+    """Run comprehensive bias assessment"""
+    print_subsection("3. COMPREHENSIVE BIAS ASSESSMENT", "-")
     
+    results = {}
     if hasattr(meta.results, 'bias_assessment'):
         bias = meta.results.bias_assessment
         
         if hasattr(bias, 'egger'):
-            print(f"Egger test p-value: {bias.egger.get('p_value', 'N/A'):.3f}")
+            egger_p = bias.egger.get('p_value', 'N/A')
+            print(f"Egger test p-value: {egger_p:.3f}" if egger_p != 'N/A' else f"Egger test p-value: {egger_p}")
+            results['egger_p'] = egger_p
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
-            if pet_peese.get('success', True):
+            if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
                 print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
+                results['pet_peese_effect'] = pet_peese['corrected_effect']
         
         if hasattr(bias, 'trim_fill'):
             trim_fill = bias.trim_fill
             print(f"Trim-and-fill: {trim_fill['n_imputed']} studies imputed")
+            results['trim_fill_imputed'] = trim_fill['n_imputed']
         
         if hasattr(bias, 'p_curve'):
             p_curve = bias.p_curve
             if 'evidential_value' in p_curve:
                 print(f"P-curve evidential value: {p_curve['evidential_value']}")
+                results['p_curve_evidential'] = p_curve['evidential_value']
+    else:
+        print("Bias assessment not available (insufficient studies or missing dependencies)")
     
-    # ===================================================================
-    # 4. CONFLICT DETECTION
-    # ===================================================================
-    print(f"\n4. CONFLICT DETECTION")
-    print("-" * 20)
+    return results
+
+def run_conflict_detection(meta) -> Dict[str, Any]:
+    """Run conflict detection analysis"""
+    print_subsection("4. CONFLICT DETECTION", "-")
     
+    results = {}
     if hasattr(meta.results, 'conflict_detection'):
         conflict = meta.results.conflict_detection
         if hasattr(conflict, 'conflicting'):
@@ -3265,33 +3329,47 @@ def run_unified_demo():
             print(f"Number of clusters: {conflict.k}")
             print(f"Silhouette score: {conflict.silhouette:.3f}")
             print(f"Effect range: {conflict.delta:.3f}")
+            
+            results = {
+                'conflicts_detected': conflict.conflicting,
+                'n_clusters': conflict.k,
+                'silhouette_score': conflict.silhouette,
+                'effect_range': conflict.delta
+            }
     
-    # ===================================================================
-    # 5. MULTIVERSE ANALYSIS
-    # ===================================================================
-    print(f"\n5. MULTIVERSE ANALYSIS")
-    print("-" * 22)
+    return results
+
+def run_multiverse(meta) -> Dict[str, Any]:
+    """Run multiverse analysis"""
+    print_subsection("5. MULTIVERSE ANALYSIS", "-")
     
     multiverse_results = meta.multiverse_analysis()
     effect_range = multiverse_results['effect'].max() - multiverse_results['effect'].min()
     print(f"Multiverse analysis: Effect range = {effect_range:.3f}")
     print(f"Number of specifications: {len(multiverse_results)}")
     
-    # ===================================================================
-    # 6. MISSING STUDY SENSITIVITY
-    # ===================================================================
-    print(f"\n6. MISSING STUDY SENSITIVITY")
-    print("-" * 28)
+    return {
+        'effect_range': effect_range,
+        'n_specifications': len(multiverse_results),
+        'results': multiverse_results
+    }
+
+def run_missing_sensitivity(meta, n_max: int = 3) -> Dict[str, Any]:
+    """Run missing study sensitivity analysis"""
+    print_subsection("6. MISSING STUDY SENSITIVITY", "-")
     
-    missing_results = meta.missing_study_sensitivity(n_max=3)
+    missing_results = meta.missing_study_sensitivity(n_max=n_max)
     max_change = missing_results['effect_change'].abs().max()
     print(f"Missing study sensitivity: Max effect change = {max_change:.3f}")
     
-    # ===================================================================
-    # 7. SEQUENTIAL ANALYSIS
-    # ===================================================================
-    print(f"\n7. SEQUENTIAL ANALYSIS")
-    print("-" * 20)
+    return {
+        'max_effect_change': max_change,
+        'results': missing_results
+    }
+
+def run_sequential_analysis(meta) -> Dict[str, Any]:
+    """Run sequential analysis"""
+    print_subsection("7. SEQUENTIAL ANALYSIS", "-")
     
     # Cumulative analysis
     cumulative = meta.cumulative_analysis(sort_by='year')
@@ -3305,40 +3383,60 @@ def run_unified_demo():
     conclusive = "Yes" if tsa_results['conclusive'] else "No"
     print(f"TSA conclusive: {conclusive}")
     
-    # ===================================================================
-    # 8. DOSE-RESPONSE ANALYSIS
-    # ===================================================================
-    print(f"\n8. DOSE-RESPONSE ANALYSIS")
-    print("-" * 27)
+    return {
+        'final_effect': final_effect,
+        'effect_evolution': effect_evolution,
+        'tsa_conclusive': tsa_results['conclusive'],
+        'cumulative_results': cumulative,
+        'tsa_results': tsa_results
+    }
+
+def run_dose_response(meta) -> Dict[str, Any]:
+    """Run dose-response analysis"""
+    print_subsection("8. DOSE-RESPONSE ANALYSIS", "-")
     
     dose_results = meta.dose_response_analysis('dose_mg', model_type='linear')
     print(f"Dose-response slope: {dose_results['slope']:.4f} (p = {dose_results['p_slope']:.3f})")
     print(f"R² = {dose_results['r_squared']:.3f}")
     
-    # ===================================================================
-    # 9. BAYESIAN METHODS
-    # ===================================================================
-    print(f"\n9. BAYESIAN METHODS")
-    print("-" * 18)
+    return {
+        'slope': dose_results['slope'],
+        'p_slope': dose_results['p_slope'],
+        'r_squared': dose_results['r_squared'],
+        'results': dose_results
+    }
+
+def run_bayesian(meta) -> Dict[str, Any]:
+    """Run Bayesian methods"""
+    print_subsection("9. BAYESIAN METHODS", "-")
     
+    results = {}
     if HAS_PYMC:
         try:
             bayes_results = meta.bayesian_stacking(chains=2, draws=500)
             if bayes_results.get('success', False):
                 print(f"Bayesian posterior mean: {bayes_results['posterior_mean']:.3f}")
                 print(f"Posterior SD: {bayes_results['posterior_sd']:.3f}")
+                results = {
+                    'posterior_mean': bayes_results['posterior_mean'],
+                    'posterior_sd': bayes_results['posterior_sd'],
+                    'success': True
+                }
             else:
                 print("Bayesian analysis failed or unavailable")
+                results['success'] = False
         except Exception as e:
             print(f"Bayesian analysis failed: {e}")
+            results = {'success': False, 'error': str(e)}
     else:
         print("PyMC not available - Bayesian methods disabled")
+        results = {'success': False, 'reason': 'PyMC not available'}
     
-    # ===================================================================
-    # 10. GRADE ASSESSMENT
-    # ===================================================================
-    print(f"\n10. GRADE EVIDENCE ASSESSMENT")
-    print("-" * 32)
+    return results
+
+def run_grade_assessment() -> Dict[str, Any]:
+    """Run GRADE evidence assessment"""
+    print_subsection("10. GRADE EVIDENCE ASSESSMENT", "-")
     
     grade_result = UnifiedMetaAnalysis.grade_assessment(
         risk_of_bias=1, inconsistency=1, indirectness=0,
@@ -3347,70 +3445,93 @@ def run_unified_demo():
     print(f"GRADE quality: {grade_result['overall_quality']}")
     print(f"Quality score: {grade_result['quality_score']}/4")
     
-    # ===================================================================
-    # 11. EDUCATIONAL SIMULATION
-    # ===================================================================
-    print(f"\n11. EDUCATIONAL SIMULATION")
-    print("-" * 26)
+    return grade_result
+
+def run_simulation() -> Dict[str, Any]:
+    """Run educational simulation"""
+    print_subsection("11. EDUCATIONAL SIMULATION", "-")
     
     sim_results = UnifiedMetaAnalysis.simulation_study(
         true_effect=0.3, n_simulations=20, bias_scenario='publication')
     sim_df = sim_results['simulation_results']
+    
+    results = {'sim_results': sim_results}
     if not sim_df.empty:
-        print(f"Simulation study: Bias range = {sim_df['bias'].min():.4f} to {sim_df['bias'].max():.4f}")
-        print(f"Coverage probability range: {sim_df['coverage_prob'].min():.3f} to {sim_df['coverage_prob'].max():.3f}")
+        bias_range = (sim_df['bias'].min(), sim_df['bias'].max())
+        coverage_range = (sim_df['coverage_prob'].min(), sim_df['coverage_prob'].max())
+        print(f"Simulation study: Bias range = {bias_range[0]:.4f} to {bias_range[1]:.4f}")
+        print(f"Coverage probability range: {coverage_range[0]:.3f} to {coverage_range[1]:.3f}")
+        
+        results.update({
+            'bias_range': bias_range,
+            'coverage_range': coverage_range
+        })
     
-    # ===================================================================
-    # 12. LIVING META-ANALYSIS SETUP
-    # ===================================================================
-    print(f"\n12. LIVING META-ANALYSIS")
-    print("-" * 24)
+    return results
+
+def run_living_meta(meta) -> Dict[str, Any]:
+    """Run living meta-analysis setup"""
+    print_subsection("12. LIVING META-ANALYSIS", "-")
     
+    results = {}
     if HAS_BIOPYTHON:
         living_config = meta.setup_living_meta("meta-analysis cardiovascular", "demo_living")
         print(f"Living MA initialized: {living_config['query']}")
         print(f"Output directory: {living_config['output_dir']}")
+        results = living_config
     else:
         print("BioPython not available - Living MA disabled")
+        results = {'available': False, 'reason': 'BioPython not available'}
     
-    # ===================================================================
-    # 13. VISUALIZATION SUITE
-    # ===================================================================
-    print(f"\n13. VISUALIZATION SUITE")
-    print("-" * 23)
+    return results
+
+# ===================================================================
+# COMPREHENSIVE DEMO FUNCTION - FIXED INDENTATION
+# ===================================================================
+
+def run_unified_demo(n_studies: int = 25, seed: int = 42, output_dir: str = ".", 
+                     save_visuals: bool = True, save_text_report: bool = True) -> 'UnifiedMetaAnalysis':
+    """Comprehensive demonstration of all unified capabilities including new modules"""
     
-    try:
-        # Create plots
-        forest_fig = meta.create_forest_plot(show_weights=True)
-        funnel_fig = meta.create_funnel_plot(enhanced=True, include_bias_methods=True)
-        diagnostic_plots = meta.create_diagnostic_plots()
-        
-        # Save plots
-        forest_fig.savefig('unified_forest_plot.png', dpi=150, bbox_inches='tight')
-        funnel_fig.savefig('unified_funnel_plot.png', dpi=150, bbox_inches='tight')
-        diagnostic_plots['influence_plot'].savefig('influence_plot.png', dpi=150, bbox_inches='tight')
-        diagnostic_plots['cumulative_plot'].savefig('cumulative_plot.png', dpi=150, bbox_inches='tight')
-        
-        plt.close('all')
-        print("All plots created successfully")
-        
-    except Exception as e:
-        print(f"Visualization failed: {e}")
+    # Print standardized heading
+    print_section("PyMeta-CBAMM Unified Suite v3.0 - COMPLETE FEATURE DEMONSTRATION")
     
-    # ===================================================================
-    # 14. COMPREHENSIVE REPORT
-    # ===================================================================
-    print(f"\n14. COMPREHENSIVE REPORT")
-    print("-" * 25)
+    # Generate demo data
+    demo_data = generate_demo_data(n_studies, seed)
     
-    report = meta.comprehensive_report()
-    with open('unified_meta_report.txt', 'w') as f:
-        f.write(report)
-    print("Comprehensive report saved to 'unified_meta_report.txt'")
+    # Run core analysis
+    print_subsection("1. CORE UNIFIED ANALYSIS", "-")
+    meta = run_core_analysis(demo_data)
+    print_analysis_summary(meta)
     
-    print(f"\n" + "=" * 90)
-    print("UNIFIED SUITE DEMONSTRATION COMPLETE")
-    print("=" * 90)
+    # Run modular analysis steps
+    run_diagnostics(meta)
+    run_bias_assessment(meta)
+    run_conflict_detection(meta)
+    run_multiverse(meta)
+    run_missing_sensitivity(meta, n_max=3)
+    run_sequential_analysis(meta)
+    run_dose_response(meta)
+    run_bayesian(meta)
+    run_grade_assessment()
+    run_simulation()
+    run_living_meta(meta)
+    
+    # Visualization suite
+    print_subsection("13. VISUALIZATION SUITE", "-")
+    if save_visuals:
+        save_plots(meta, output_dir)
+    else:
+        print("Visualization saving disabled")
+    
+    # Comprehensive report
+    print_subsection("14. COMPREHENSIVE REPORT", "-")
+    if save_text_report:
+        save_report(meta, output_dir)
+    else:
+        print("Report saving disabled")
+    
+    print_section("UNIFIED SUITE DEMONSTRATION COMPLETE")
     
     # Summary of all capabilities
     capabilities = [
@@ -3449,11 +3570,50 @@ def run_unified_demo():
 # CONVENIENCE FUNCTIONS FOR QUICK ANALYSIS
 # ===================================================================
 
-def quick_meta(effects: List[float], se: List[float], labels: List[str] = None,
+def quick_meta(effects: List[float], se: List[float], labels: Optional[List[str]] = None,
                tau2_method: str = 'REML', use_hksj: bool = True) -> UnifiedMetaAnalysis:
-    """Quick meta-analysis from lists"""
+    """Quick meta-analysis from lists with validation
+    
+    Args:
+        effects: List of effect sizes
+        se: List of standard errors  
+        labels: Optional list of study labels
+        tau2_method: Method for tau² estimation
+        use_hksj: Whether to use Hartung-Knapp-Sidik-Jonkman adjustment
+        
+    Returns:
+        UnifiedMetaAnalysis: Fitted meta-analysis object
+        
+    Raises:
+        ValueError: If inputs are invalid
+    """
+    # Validate lengths
+    if len(effects) != len(se):
+        raise ValueError(f"Length mismatch: effects ({len(effects)}) != se ({len(se)})")
+    
+    if len(effects) < 2:
+        raise ValueError("At least 2 studies required for meta-analysis")
+    
+    # Coerce to numeric and validate
+    try:
+        effects = [float(x) for x in effects]
+        se = [float(x) for x in se]
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Non-numeric values in effects or se: {e}")
+    
+    # Check for NaN/infinite values
+    if any(np.isnan(effects)) or any(np.isinf(effects)):
+        raise ValueError("NaN or infinite values found in effects")
+    if any(np.isnan(se)) or any(np.isinf(se)):
+        raise ValueError("NaN or infinite values found in se")
+    if any(x <= 0 for x in se):
+        raise ValueError("Standard errors must be positive")
+    
+    # Handle labels
     if labels is None:
         labels = [f'Study_{i+1}' for i in range(len(effects))]
+    elif len(labels) != len(effects):
+        raise ValueError(f"Length mismatch: labels ({len(labels)}) != effects ({len(effects)})")
     
     data = pd.DataFrame({
         'effect': effects,
@@ -3462,12 +3622,64 @@ def quick_meta(effects: List[float], se: List[float], labels: List[str] = None,
     })
     
     config = UnifiedMetaConfig(tau2_method=tau2_method, use_hksj=use_hksj)
-    return UnifiedMetaAnalysis(data, 'effect', 'se', 'study', config=config).analyze()
+    return UnifiedMetaAnalysis(data, 'effect', 'se', 'study', config=config).analyze(include_conflicts=False)
 
 def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int],
                            means2: List[float], sds2: List[float], n2: List[int],
                            measure: str = 'SMD') -> UnifiedMetaAnalysis:
-    """Meta-analysis from summary statistics"""
+    """Meta-analysis from summary statistics with validation
+    
+    Args:
+        means1: List of means for group 1
+        sds1: List of standard deviations for group 1
+        n1: List of sample sizes for group 1
+        means2: List of means for group 2
+        sds2: List of standard deviations for group 2
+        n2: List of sample sizes for group 2
+        measure: Effect size measure ('SMD' or 'MD')
+        
+    Returns:
+        UnifiedMetaAnalysis: Fitted meta-analysis object
+        
+    Raises:
+        ValueError: If inputs are invalid
+    """
+    # Validate measure
+    if measure not in ['SMD', 'MD']:
+        raise ValueError(f"Invalid measure '{measure}'. Must be 'SMD' or 'MD'")
+    
+    # Validate equal lengths
+    lengths = [len(means1), len(sds1), len(n1), len(means2), len(sds2), len(n2)]
+    if len(set(lengths)) > 1:
+        raise ValueError(f"Unequal input lengths: {lengths}")
+    
+    if lengths[0] < 2:
+        raise ValueError("At least 2 studies required for meta-analysis")
+    
+    # Coerce and validate numeric inputs
+    try:
+        means1 = [float(x) for x in means1]
+        means2 = [float(x) for x in means2]
+        sds1 = [float(x) for x in sds1]
+        sds2 = [float(x) for x in sds2]
+        n1 = [int(x) for x in n1]
+        n2 = [int(x) for x in n2]
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid numeric values: {e}")
+    
+    # Validate sample sizes
+    if any(x <= 0 for x in n1) or any(x <= 0 for x in n2):
+        raise ValueError("Sample sizes must be positive")
+    
+    # Validate standard deviations
+    if any(x <= 0 for x in sds1) or any(x <= 0 for x in sds2):
+        raise ValueError("Standard deviations must be positive")
+    
+    # Check for NaN/infinite values
+    all_values = means1 + means2 + sds1 + sds2
+    if any(np.isnan(all_values)) or any(np.isinf(all_values)):
+        raise ValueError("NaN or infinite values found in summary statistics")
+    
     effects = []
     ses = []
     
@@ -3475,6 +3687,8 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
         if measure == 'SMD':
             # Standardized mean difference (Cohen's d)
             pooled_sd = np.sqrt(((n1_i - 1) * sd1**2 + (n2_i - 1) * sd2**2) / (n1_i + n2_i - 2))
+            if pooled_sd <= 0:
+                raise ValueError(f"Invalid pooled SD ({pooled_sd}) for study {len(effects)+1}")
             d = (m1 - m2) / pooled_sd
             var_d = (n1_i + n2_i) / (n1_i * n2_i) + d**2 / (2 * (n1_i + n2_i))
             effects.append(d)
@@ -3492,7 +3706,7 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
         'study': [f'Study_{i+1}' for i in range(len(effects))]
     })
     
-    return UnifiedMetaAnalysis(data, 'effect', 'se', 'study').analyze()
+    return UnifiedMetaAnalysis(data, 'effect', 'se', 'study').analyze(include_conflicts=False)
 
 # ===================================================================
 # MAIN EXECUTION
@@ -3500,7 +3714,14 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
 
 if __name__ == '__main__':
     try:
-        demo_meta = run_unified_demo()
+        print("Starting PyMeta-CBAMM Unified Suite demonstration...")
+        demo_meta = run_unified_demo(
+            n_studies=25, 
+            seed=42, 
+            output_dir=".", 
+            save_visuals=True, 
+            save_text_report=True
+        )
         print(f"\nDemo completed successfully! Unified meta-analysis object returned.")
         print(f"Access results with: demo_meta.results")
         print(f"Generate report with: demo_meta.comprehensive_report()")
@@ -3508,6 +3729,12 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Demo failed: {e}")
         print(f"Demo failed: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nIf you encounter issues, please check:")
+        print("- Required dependencies are installed")
+        print("- Input data is valid")
+        print("- Sufficient disk space for outputs")
         raise
 
 # ===================================================================
