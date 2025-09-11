@@ -2779,8 +2779,465 @@ class EnhancedDiagnosticTestAccuracy:
         return fig
 
 # ===================================================================
-# NETWORK META-ANALYSIS COMPONENTS
+# NETWORK META-ANALYSIS COMPONENTS (PHASE 2: NETMETA-INSPIRED)
 # ===================================================================
+
+@dataclass
+class NetworkMetaData:
+    """Data structure for network meta-analysis supporting arm-level data"""
+    study: List[str]
+    treatment: List[str] 
+    yi: List[float]  # Effect on log scale when appropriate
+    sei: Optional[List[float]] = None  # Standard error
+    vi: Optional[List[float]] = None   # Variance
+    n: Optional[List[int]] = None      # Arm size
+    events: Optional[List[int]] = None # Events for binary data
+    
+    def __post_init__(self):
+        """Validate and process network data"""
+        # Convert to DataFrame for easier handling
+        data_dict = {
+            'study': self.study,
+            'treatment': self.treatment,
+            'yi': self.yi
+        }
+        
+        # Add variance/SE information
+        if self.sei is not None:
+            data_dict['sei'] = self.sei
+            data_dict['vi'] = [se**2 for se in self.sei]
+        elif self.vi is not None:
+            data_dict['vi'] = self.vi
+            data_dict['sei'] = [np.sqrt(v) for v in self.vi]
+        else:
+            raise ValueError("Either sei or vi must be provided")
+            
+        # Add optional columns
+        if self.n is not None:
+            data_dict['n'] = self.n
+        if self.events is not None:
+            data_dict['events'] = self.events
+            
+        self.data = pd.DataFrame(data_dict)
+        self._validate_data()
+        
+    def _validate_data(self):
+        """Validate network meta-analysis data"""
+        required_cols = ['study', 'treatment', 'yi', 'sei', 'vi']
+        for col in required_cols:
+            if col not in self.data.columns:
+                raise ValueError(f"Missing required column: {col}")
+                
+        # Check for missing values
+        if self.data[['study', 'treatment', 'yi']].isnull().any().any():
+            raise ValueError("Missing values in required columns")
+            
+        # Check minimum data requirements
+        if len(self.data) < 3:
+            raise ValueError("At least 3 arms required for network meta-analysis")
+            
+        studies_per_treatment = self.data.groupby('treatment')['study'].nunique()
+        if (studies_per_treatment < 2).any():
+            logger.warning("Some treatments appear in only one study")
+            
+@dataclass 
+class NetworkGeometry:
+    """Network geometry summary statistics"""
+    n_studies: int = 0
+    n_treatments: int = 0 
+    n_arms: int = 0
+    n_comparisons: int = 0
+    density: float = 0.0
+    diameter: int = 0
+    is_connected: bool = False
+    treatments: List[str] = field(default_factory=list)
+    comparisons: List[Tuple[str, str]] = field(default_factory=list)
+
+@dataclass
+class NetworkConsistencyResults:
+    """Results from network meta-analysis consistency model"""
+    # Fixed-effects results
+    fixed_effects: Dict[str, float] = field(default_factory=dict)
+    fixed_effects_se: Dict[str, float] = field(default_factory=dict)
+    fixed_effects_ci_low: Dict[str, float] = field(default_factory=dict) 
+    fixed_effects_ci_high: Dict[str, float] = field(default_factory=dict)
+    
+    # Random-effects results (when applicable)
+    random_effects: Optional[Dict[str, float]] = None
+    random_effects_se: Optional[Dict[str, float]] = None
+    random_effects_ci_low: Optional[Dict[str, float]] = None
+    random_effects_ci_high: Optional[Dict[str, float]] = None
+    tau2: Optional[float] = None
+    
+    # Network summaries
+    geometry: Optional[NetworkGeometry] = None
+    league_table: Optional[pd.DataFrame] = None
+    p_scores: Optional[pd.Series] = None
+
+class NetworkMetaAnalysis:
+    """Network meta-analysis with netmeta-inspired functionality"""
+    
+    def __init__(self, data: NetworkMetaData, reference_treatment: str = None,
+                 method: str = 'fixed', tau2_method: str = 'DL'):
+        """
+        Initialize network meta-analysis
+        
+        Parameters:
+        data: NetworkMetaData object
+        reference_treatment: Reference treatment (auto-selected if None)
+        method: 'fixed' or 'random'
+        tau2_method: Tau-squared estimation method for random effects
+        """
+        self.data = data
+        self.method = method
+        self.tau2_method = tau2_method
+        
+        # Set reference treatment
+        if reference_treatment is None:
+            # Choose treatment with most studies
+            treatment_counts = data.data.groupby('treatment')['study'].nunique()
+            self.reference_treatment = treatment_counts.idxmax()
+        else:
+            self.reference_treatment = reference_treatment
+            
+        self.results = None
+        self._fitted = False
+        
+    def fit(self) -> 'NetworkMetaAnalysis':
+        """Fit network meta-analysis consistency model"""
+        # Create contrast-level data
+        contrast_data = self._create_contrast_data()
+        
+        # Analyze network geometry
+        geometry = self._analyze_network_geometry()
+        
+        # Fit consistency model
+        if self.method == 'fixed':
+            results = self._fit_fixed_effects(contrast_data)
+        else:
+            results = self._fit_random_effects(contrast_data)
+            
+        # Generate league table and P-scores
+        league_table = self._create_league_table(results)
+        p_scores = self._calculate_p_scores(results)
+        
+        # Store results
+        self.results = NetworkConsistencyResults(
+            fixed_effects=results['effects'],
+            fixed_effects_se=results['se'],
+            fixed_effects_ci_low=results['ci_low'],
+            fixed_effects_ci_high=results['ci_high'],
+            geometry=geometry,
+            league_table=league_table,
+            p_scores=p_scores
+        )
+        
+        if self.method == 'random':
+            self.results.random_effects = results['effects']
+            self.results.random_effects_se = results['se'] 
+            self.results.random_effects_ci_low = results['ci_low']
+            self.results.random_effects_ci_high = results['ci_high']
+            self.results.tau2 = results.get('tau2', 0.0)
+            
+        self._fitted = True
+        return self
+        
+    def _create_contrast_data(self) -> pd.DataFrame:
+        """Create contrast-level data from arm-level data"""
+        contrasts = []
+        
+        for study in self.data.data['study'].unique():
+            study_data = self.data.data[self.data.data['study'] == study]
+            
+            if len(study_data) < 2:
+                continue  # Skip single-arm studies
+                
+            # Use first treatment as study reference (or specified reference if present)
+            if self.reference_treatment in study_data['treatment'].values:
+                ref_idx = study_data[study_data['treatment'] == self.reference_treatment].index[0]
+            else:
+                ref_idx = study_data.index[0]
+                
+            ref_row = study_data.loc[ref_idx]
+            
+            for idx, row in study_data.iterrows():
+                if idx == ref_idx:
+                    continue
+                    
+                # Calculate contrast
+                yi_diff = row['yi'] - ref_row['yi'] 
+                vi_diff = row['vi'] + ref_row['vi']  # Assuming independence
+                sei_diff = np.sqrt(vi_diff)
+                
+                contrasts.append({
+                    'study': study,
+                    'comparison': f"{ref_row['treatment']}_{row['treatment']}",
+                    'treatment1': ref_row['treatment'],
+                    'treatment2': row['treatment'], 
+                    'yi': yi_diff,
+                    'vi': vi_diff,
+                    'sei': sei_diff
+                })
+                
+        return pd.DataFrame(contrasts)
+        
+    def _analyze_network_geometry(self) -> NetworkGeometry:
+        """Analyze network geometry and connectivity"""
+        treatments = sorted(self.data.data['treatment'].unique())
+        n_treatments = len(treatments)
+        
+        # Create adjacency matrix
+        adjacency = np.zeros((n_treatments, n_treatments))
+        treatment_to_idx = {t: i for i, t in enumerate(treatments)}
+        
+        comparisons = set()
+        for study in self.data.data['study'].unique():
+            study_treatments = self.data.data[self.data.data['study'] == study]['treatment'].tolist()
+            
+            # Add all pairwise comparisons within study
+            for i, t1 in enumerate(study_treatments):
+                for j, t2 in enumerate(study_treatments):
+                    if i != j:
+                        idx1, idx2 = treatment_to_idx[t1], treatment_to_idx[t2]
+                        adjacency[idx1, idx2] = 1
+                        comparisons.add(tuple(sorted([t1, t2])))
+        
+        # Check connectivity
+        is_connected = self._is_network_connected(adjacency)
+        
+        return NetworkGeometry(
+            n_studies=self.data.data['study'].nunique(),
+            n_treatments=n_treatments,
+            n_arms=len(self.data.data),
+            n_comparisons=len(comparisons),
+            density=len(comparisons) / (n_treatments * (n_treatments - 1) / 2),
+            is_connected=is_connected,
+            treatments=treatments,
+            comparisons=list(comparisons)
+        )
+        
+    def _is_network_connected(self, adjacency: np.ndarray) -> bool:
+        """Check if network is connected using DFS"""
+        n = adjacency.shape[0]
+        if n <= 1:
+            return True
+            
+        visited = np.zeros(n, dtype=bool)
+        
+        def dfs(node):
+            visited[node] = True
+            for neighbor in range(n):
+                if adjacency[node, neighbor] and not visited[neighbor]:
+                    dfs(neighbor)
+                    
+        dfs(0)
+        return np.all(visited)
+        
+    def _fit_fixed_effects(self, contrast_data: pd.DataFrame) -> Dict[str, Any]:
+        """Fit fixed-effects network meta-analysis using generalized least squares"""
+        treatments = sorted(self.data.data['treatment'].unique())
+        
+        if self.reference_treatment not in treatments:
+            raise ValueError(f"Reference treatment {self.reference_treatment} not found in data")
+            
+        # Remove reference treatment from estimation (set to 0)
+        non_ref_treatments = [t for t in treatments if t != self.reference_treatment]
+        n_params = len(non_ref_treatments)
+        
+        if n_params == 0:
+            # Only one treatment
+            return {
+                'effects': {self.reference_treatment: 0.0},
+                'se': {self.reference_treatment: 0.0},
+                'ci_low': {self.reference_treatment: 0.0},
+                'ci_high': {self.reference_treatment: 0.0}
+            }
+        
+        # Design matrix
+        X = np.zeros((len(contrast_data), n_params))
+        y = contrast_data['yi'].values
+        V = np.diag(contrast_data['vi'].values)
+        
+        for i, row in contrast_data.iterrows():
+            t1, t2 = row['treatment1'], row['treatment2']
+            
+            # Contrast is t2 - t1
+            if t1 != self.reference_treatment and t1 in non_ref_treatments:
+                idx1 = non_ref_treatments.index(t1)
+                X[i, idx1] = -1
+                
+            if t2 != self.reference_treatment and t2 in non_ref_treatments:
+                idx2 = non_ref_treatments.index(t2)
+                X[i, idx2] = 1
+        
+        # Generalized least squares: β = (X'V⁻¹X)⁻¹X'V⁻¹y
+        try:
+            V_inv = safe_matrix_inverse(V)
+            XtV_inv = X.T @ V_inv
+            XtV_invX = XtV_inv @ X
+            XtV_invX_inv = safe_matrix_inverse(XtV_invX)
+            
+            beta = XtV_invX_inv @ XtV_inv @ y
+            var_beta = XtV_invX_inv
+            se_beta = np.sqrt(np.diag(var_beta))
+            
+        except np.linalg.LinAlgError:
+            logger.warning("Singular matrix in network meta-analysis, using ridge regression")
+            # Ridge regression fallback
+            ridge_lambda = 1e-6
+            XtV_invX_ridge = XtV_invX @ X + ridge_lambda * np.eye(n_params)
+            XtV_invX_ridge_inv = safe_matrix_inverse(XtV_invX_ridge)
+            
+            beta = XtV_invX_ridge_inv @ XtV_inv @ y
+            var_beta = XtV_invX_ridge_inv
+            se_beta = np.sqrt(np.abs(np.diag(var_beta)))
+        
+        # Create results dictionaries
+        effects = {self.reference_treatment: 0.0}
+        se = {self.reference_treatment: 0.0}
+        ci_low = {self.reference_treatment: 0.0}
+        ci_high = {self.reference_treatment: 0.0}
+        
+        z_crit = norm.ppf(0.975)
+        
+        for i, treatment in enumerate(non_ref_treatments):
+            effects[treatment] = beta[i]
+            se[treatment] = se_beta[i]
+            ci_low[treatment] = beta[i] - z_crit * se_beta[i]
+            ci_high[treatment] = beta[i] + z_crit * se_beta[i]
+        
+        return {
+            'effects': effects,
+            'se': se,
+            'ci_low': ci_low,
+            'ci_high': ci_high
+        }
+        
+    def _fit_random_effects(self, contrast_data: pd.DataFrame) -> Dict[str, Any]:
+        """Fit random-effects network meta-analysis with common tau²"""
+        # First get fixed-effects estimates
+        fixed_results = self._fit_fixed_effects(contrast_data)
+        
+        # Estimate tau² using method of moments
+        tau2 = self._estimate_tau2_network(contrast_data, fixed_results)
+        
+        # Refit with tau² added to variances
+        contrast_data_re = contrast_data.copy()
+        contrast_data_re['vi'] = contrast_data_re['vi'] + tau2
+        
+        # Get random-effects estimates
+        random_results = self._fit_fixed_effects(contrast_data_re)
+        random_results['tau2'] = tau2
+        
+        return random_results
+        
+    def _estimate_tau2_network(self, contrast_data: pd.DataFrame, 
+                              fixed_results: Dict[str, Any]) -> float:
+        """Estimate tau² for network meta-analysis using method of moments"""
+        if self.tau2_method == 'DL':
+            return self._estimate_tau2_dersimonian_laird_network(contrast_data, fixed_results)
+        else:
+            logger.warning(f"Tau² method {self.tau2_method} not implemented, using DL")
+            return self._estimate_tau2_dersimonian_laird_network(contrast_data, fixed_results)
+            
+    def _estimate_tau2_dersimonian_laird_network(self, contrast_data: pd.DataFrame,
+                                               fixed_results: Dict[str, Any]) -> float:
+        """DerSimonian-Laird tau² estimation for network meta-analysis"""
+        # Calculate residuals from fixed-effects model
+        residuals = []
+        weights = []
+        
+        for _, row in contrast_data.iterrows():
+            t1, t2 = row['treatment1'], row['treatment2']
+            
+            # Predicted effect from fixed-effects model
+            pred_effect = fixed_results['effects'][t2] - fixed_results['effects'][t1]
+            
+            # Residual
+            residual = row['yi'] - pred_effect
+            residuals.append(residual)
+            weights.append(1.0 / row['vi'])
+        
+        residuals = np.array(residuals)
+        weights = np.array(weights)
+        
+        # Q statistic
+        Q = np.sum(weights * residuals**2)
+        df = len(residuals) - (len(fixed_results['effects']) - 1)
+        
+        if df <= 0:
+            return 0.0
+            
+        # DL tau² estimate
+        sum_weights = np.sum(weights)
+        sum_weights_squared = np.sum(weights**2)
+        
+        tau2 = max(0, (Q - df) / (sum_weights - sum_weights_squared / sum_weights))
+        
+        return tau2
+        
+    def _create_league_table(self, results: Dict[str, Any]) -> pd.DataFrame:
+        """Create league table with all pairwise comparisons"""
+        treatments = list(results['effects'].keys())
+        n_treatments = len(treatments)
+        
+        # Initialize league table
+        league_table = pd.DataFrame(index=treatments, columns=treatments)
+        
+        for i, t1 in enumerate(treatments):
+            for j, t2 in enumerate(treatments):
+                if i == j:
+                    league_table.loc[t1, t2] = "0.00 (Reference)"
+                elif i < j:
+                    # Upper triangle: effect (CI)
+                    effect = results['effects'][t2] - results['effects'][t1]
+                    se = np.sqrt(results['se'][t1]**2 + results['se'][t2]**2)
+                    ci_low = effect - 1.96 * se
+                    ci_high = effect + 1.96 * se
+                    
+                    league_table.loc[t1, t2] = f"{effect:.2f} ({ci_low:.2f}, {ci_high:.2f})"
+                else:
+                    # Lower triangle: inverse effect
+                    effect = results['effects'][t1] - results['effects'][t2] 
+                    se = np.sqrt(results['se'][t1]**2 + results['se'][t2]**2)
+                    ci_low = effect - 1.96 * se
+                    ci_high = effect + 1.96 * se
+                    
+                    league_table.loc[t1, t2] = f"{effect:.2f} ({ci_low:.2f}, {ci_high:.2f})"
+        
+        return league_table
+        
+    def _calculate_p_scores(self, results: Dict[str, Any]) -> pd.Series:
+        """Calculate P-scores (frequentist analogue of SUCRA)"""
+        treatments = list(results['effects'].keys())
+        effects = np.array([results['effects'][t] for t in treatments])
+        se_values = np.array([results['se'][t] for t in treatments])
+        
+        n_treatments = len(treatments)
+        p_scores = {}
+        
+        for i, treatment in enumerate(treatments):
+            p_score = 0.0
+            
+            # Compare against all other treatments
+            for j, other_treatment in enumerate(treatments):
+                if i != j:
+                    # Calculate probability that treatment i is better than j
+                    effect_diff = effects[i] - effects[j]
+                    se_diff = np.sqrt(se_values[i]**2 + se_values[j]**2)
+                    
+                    if se_diff > 0:
+                        z_score = effect_diff / se_diff
+                        prob_better = norm.cdf(z_score)
+                    else:
+                        prob_better = 0.5
+                        
+                    p_score += prob_better
+            
+            # Normalize by number of comparisons
+            p_scores[treatment] = p_score / (n_treatments - 1)
+        
+        return pd.Series(p_scores, name='P_score')
 
 class NetworkMetaRankings:
     """Network meta-analysis ranking methods including SUCRA"""
@@ -3738,6 +4195,786 @@ if __name__ == '__main__':
         raise
 
 # ===================================================================
+# MULTILEVEL/MULTIVARIATE META-ANALYSIS (PHASE 2: METAFOR::RMA.MV-INSPIRED)
+# ===================================================================
+
+@dataclass
+class MultilevelResults:
+    """Results from multilevel/multivariate meta-analysis"""
+    effects: np.ndarray = field(default_factory=lambda: np.array([]))
+    se: np.ndarray = field(default_factory=lambda: np.array([]))
+    ci_low: np.ndarray = field(default_factory=lambda: np.array([]))
+    ci_high: np.ndarray = field(default_factory=lambda: np.array([]))
+    variance_components: Dict[str, float] = field(default_factory=dict)
+    
+class MultilevelMetaAnalysis:
+    """Multilevel/multivariate meta-analysis with metafor::rma.mv-inspired functionality"""
+    
+    def __init__(self, data: pd.DataFrame, yi_col: str, vi_col: str, 
+                 study_col: str, outcome_col: str = None, time_col: str = None,
+                 S_matrices: Dict[str, np.ndarray] = None, 
+                 W_matrices: Dict[str, np.ndarray] = None):
+        """
+        Initialize multilevel meta-analysis
+        
+        Parameters:
+        data: DataFrame with effect sizes
+        yi_col: Column name for effect sizes
+        vi_col: Column name for variances  
+        study_col: Column name for study identifiers
+        outcome_col: Column name for outcome identifiers (for multiple outcomes)
+        time_col: Column name for time points (for longitudinal data)
+        S_matrices: Dict of within-study covariance matrices by study
+        W_matrices: Dict of weight matrices by study
+        """
+        self.data = data.copy()
+        self.yi_col = yi_col
+        self.vi_col = vi_col
+        self.study_col = study_col
+        self.outcome_col = outcome_col
+        self.time_col = time_col
+        self.S_matrices = S_matrices or {}
+        self.W_matrices = W_matrices or {}
+        
+        self.results = None
+        self._fitted = False
+        
+        # Create cluster variable for random effects
+        if outcome_col and time_col:
+            self.data['cluster'] = self.data[study_col].astype(str) + "_" + \
+                                  self.data[outcome_col].astype(str) + "_" + \
+                                  self.data[time_col].astype(str)
+        elif outcome_col:
+            self.data['cluster'] = self.data[study_col].astype(str) + "_" + \
+                                  self.data[outcome_col].astype(str)
+        elif time_col:
+            self.data['cluster'] = self.data[study_col].astype(str) + "_" + \
+                                  self.data[time_col].astype(str)
+        else:
+            self.data['cluster'] = self.data[study_col].astype(str)
+            
+    def fit(self, max_iter: int = 100, tol: float = 1e-6) -> 'MultilevelMetaAnalysis':
+        """Fit multilevel meta-analysis using iterative GLS"""
+        
+        # Initialize variance components
+        sigma2_study = 0.1  # Between-study variance
+        sigma2_within = 0.05  # Within-study variance
+        
+        n_obs = len(self.data)
+        y = self.data[self.yi_col].values
+        
+        # Create design matrix (intercept only for now)
+        X = np.ones((n_obs, 1))
+        
+        # Iterative estimation
+        for iteration in range(max_iter):
+            # Construct variance-covariance matrix
+            V = self._construct_variance_matrix(sigma2_study, sigma2_within)
+            
+            # Generalized least squares
+            try:
+                V_inv = safe_matrix_inverse(V)
+                XtV_inv = X.T @ V_inv
+                XtV_invX_inv = safe_matrix_inverse(XtV_inv @ X)
+                
+                # Parameter estimates
+                beta = XtV_invX_inv @ XtV_inv @ y
+                
+                # Residuals
+                residuals = y - X @ beta
+                
+                # Update variance components using REML-like estimation
+                new_sigma2_study, new_sigma2_within = self._update_variance_components(
+                    residuals, V_inv, sigma2_study, sigma2_within)
+                
+                # Check convergence
+                if (abs(new_sigma2_study - sigma2_study) < tol and 
+                    abs(new_sigma2_within - sigma2_within) < tol):
+                    break
+                    
+                sigma2_study = new_sigma2_study
+                sigma2_within = new_sigma2_within
+                
+            except np.linalg.LinAlgError:
+                logger.warning("Numerical issues in multilevel meta-analysis")
+                break
+        
+        # Final estimates
+        var_beta = XtV_invX_inv
+        se_beta = np.sqrt(np.diag(var_beta))
+        
+        # Confidence intervals
+        z_crit = norm.ppf(0.975)
+        ci_low = beta - z_crit * se_beta
+        ci_high = beta + z_crit * se_beta
+        
+        self.results = MultilevelResults(
+            effects=beta,
+            se=se_beta, 
+            ci_low=ci_low,
+            ci_high=ci_high,
+            variance_components={
+                'sigma2_study': sigma2_study,
+                'sigma2_within': sigma2_within
+            }
+        )
+        
+        self._fitted = True
+        return self
+        
+    def _construct_variance_matrix(self, sigma2_study: float, 
+                                 sigma2_within: float) -> np.ndarray:
+        """Construct variance-covariance matrix for multilevel model"""
+        n_obs = len(self.data)
+        V = np.zeros((n_obs, n_obs))
+        
+        # Add sampling variances to diagonal
+        V = np.diag(self.data[self.vi_col].values)
+        
+        # Add random effects structure
+        studies = self.data[self.study_col].unique()
+        for study in studies:
+            study_indices = self.data[self.data[self.study_col] == study].index.tolist()
+            
+            # Between-study variance component
+            for i in study_indices:
+                for j in study_indices:
+                    V[i, j] += sigma2_study
+                    
+            # Within-study covariance (if multiple outcomes/timepoints per study)
+            if len(study_indices) > 1:
+                # Use provided S matrix if available
+                if study in self.S_matrices:
+                    S = self.S_matrices[study]
+                    for idx_i, i in enumerate(study_indices):
+                        for idx_j, j in enumerate(study_indices):
+                            if idx_i != idx_j and idx_i < len(S) and idx_j < len(S):
+                                V[i, j] += S[idx_i, idx_j]
+                else:
+                    # Default within-study correlation structure
+                    for i in study_indices:
+                        for j in study_indices:
+                            if i != j:
+                                V[i, j] += sigma2_within
+        
+        return V
+        
+    def _update_variance_components(self, residuals: np.ndarray, V_inv: np.ndarray,
+                                  sigma2_study: float, sigma2_within: float) -> Tuple[float, float]:
+        """Update variance components using method-of-moments-like approach"""
+        
+        # Simple method-of-moments update (could be improved with REML)
+        # Between-study component
+        study_effects = []
+        for study in self.data[self.study_col].unique():
+            study_indices = self.data[self.data[self.study_col] == study].index.tolist()
+            if len(study_indices) > 0:
+                study_mean_residual = np.mean(residuals[study_indices])
+                study_effects.append(study_mean_residual)
+        
+        if len(study_effects) > 1:
+            new_sigma2_study = max(0, np.var(study_effects))
+        else:
+            new_sigma2_study = sigma2_study
+            
+        # Within-study component (simplified)
+        within_residuals = []
+        for study in self.data[self.study_col].unique():
+            study_indices = self.data[self.data[self.study_col] == study].index.tolist()
+            if len(study_indices) > 1:
+                study_residuals = residuals[study_indices]
+                study_mean = np.mean(study_residuals)
+                within_residuals.extend(study_residuals - study_mean)
+        
+        if len(within_residuals) > 1:
+            new_sigma2_within = max(0, np.var(within_residuals))
+        else:
+            new_sigma2_within = sigma2_within
+            
+        return new_sigma2_study, new_sigma2_within
+        
+    def cluster_robust_se(self) -> np.ndarray:
+        """Calculate cluster-robust standard errors (CRVE/CR2 when available)"""
+        if not self._fitted:
+            raise ValueError("Model must be fitted first")
+            
+        # Placeholder for cluster-robust variance estimation
+        # In practice, this would implement sandwich estimators
+        logger.warning("Cluster-robust SE not fully implemented - returning model-based SE")
+        return self.results.se
+
+# ===================================================================
+# ROBUST VARIANCE ESTIMATION & CORRELATED EFFECTS (PHASE 2: ROBUMETA/CLUBSANDWICH-INSPIRED)
+# ===================================================================
+
+class CorrelatedEffectsAnalysis:
+    """Correlated effects meta-analysis with robust variance estimation"""
+    
+    def __init__(self, data: pd.DataFrame, yi_col: str, vi_col: str, 
+                 study_col: str, rho: float = 0.8):
+        """
+        Initialize correlated effects analysis
+        
+        Parameters:
+        data: DataFrame with effect sizes
+        yi_col: Column name for effect sizes
+        vi_col: Column name for variances
+        study_col: Column name for study identifiers
+        rho: Working correlation parameter
+        """
+        self.data = data.copy()
+        self.yi_col = yi_col
+        self.vi_col = vi_col
+        self.study_col = study_col
+        self.rho = rho
+        
+        self.results = {}
+        
+    def sensitivity_analysis(self, rho_values: List[float] = None) -> pd.DataFrame:
+        """Conduct sensitivity analysis over correlation parameter values"""
+        if rho_values is None:
+            rho_values = np.arange(0, 0.95, 0.1)
+            
+        sensitivity_results = []
+        
+        for rho in rho_values:
+            self.rho = rho
+            result = self._fit_correlated_effects()
+            
+            sensitivity_results.append({
+                'rho': rho,
+                'effect': result['effect'],
+                'se': result['se'], 
+                'ci_low': result['ci_low'],
+                'ci_high': result['ci_high'],
+                'p_value': result['p_value']
+            })
+            
+        return pd.DataFrame(sensitivity_results)
+        
+    def _fit_correlated_effects(self) -> Dict[str, float]:
+        """Fit correlated effects model with working correlation"""
+        
+        # Construct working correlation matrix
+        V = self._construct_working_correlation_matrix()
+        
+        y = self.data[self.yi_col].values
+        X = np.ones((len(y), 1))  # Intercept only
+        
+        try:
+            # Weighted least squares with working correlation
+            V_inv = safe_matrix_inverse(V)
+            XtV_inv = X.T @ V_inv
+            XtV_invX_inv = safe_matrix_inverse(XtV_inv @ X)
+            
+            beta = XtV_invX_inv @ XtV_inv @ y
+            
+            # Robust variance estimation (sandwich estimator)
+            residuals = y - X @ beta
+            meat = self._calculate_meat_matrix(residuals, X, V_inv)
+            robust_var = XtV_invX_inv @ meat @ XtV_invX_inv
+            
+            se = np.sqrt(np.diag(robust_var))[0]
+            effect = beta[0]
+            
+            # Satterthwaite degrees of freedom (simplified)
+            df = self._calculate_satterthwaite_df(V, V_inv)
+            t_crit = t.ppf(0.975, df)
+            
+            ci_low = effect - t_crit * se
+            ci_high = effect + t_crit * se
+            
+            t_stat = effect / se if se > 0 else 0
+            p_value = 2 * (1 - t.cdf(abs(t_stat), df))
+            
+            return {
+                'effect': effect,
+                'se': se,
+                'ci_low': ci_low, 
+                'ci_high': ci_high,
+                'p_value': p_value,
+                'df': df
+            }
+            
+        except np.linalg.LinAlgError:
+            logger.warning("Numerical issues in correlated effects analysis")
+            return {
+                'effect': 0.0,
+                'se': np.inf,
+                'ci_low': -np.inf,
+                'ci_high': np.inf,
+                'p_value': 1.0,
+                'df': 1
+            }
+            
+    def _construct_working_correlation_matrix(self) -> np.ndarray:
+        """Construct working correlation matrix"""
+        n = len(self.data)
+        V = np.diag(self.data[self.vi_col].values)
+        
+        # Add correlations for effects within same study
+        for study in self.data[self.study_col].unique():
+            study_indices = self.data[self.data[self.study_col] == study].index.tolist()
+            
+            for i in study_indices:
+                for j in study_indices:
+                    if i != j:
+                        # Working correlation between effects in same study
+                        vi, vj = self.data.loc[i, self.vi_col], self.data.loc[j, self.vi_col]
+                        V[i, j] = self.rho * np.sqrt(vi * vj)
+                        
+        return V
+        
+    def _calculate_meat_matrix(self, residuals: np.ndarray, X: np.ndarray, 
+                             V_inv: np.ndarray) -> np.ndarray:
+        """Calculate meat matrix for sandwich variance estimator"""
+        n_studies = self.data[self.study_col].nunique()
+        p = X.shape[1]
+        meat = np.zeros((p, p))
+        
+        # Cluster by study for robust variance
+        for study in self.data[self.study_col].unique():
+            study_indices = self.data[self.data[self.study_col] == study].index.tolist()
+            
+            if len(study_indices) > 0:
+                X_study = X[study_indices, :]
+                resid_study = residuals[study_indices]
+                V_inv_study = V_inv[np.ix_(study_indices, study_indices)]
+                
+                # Study contribution to meat matrix
+                study_contrib = X_study.T @ V_inv_study @ np.outer(resid_study, resid_study) @ V_inv_study @ X_study
+                meat += study_contrib
+                
+        return meat
+        
+    def _calculate_satterthwaite_df(self, V: np.ndarray, V_inv: np.ndarray) -> float:
+        """Calculate Satterthwaite degrees of freedom (simplified)"""
+        # Simplified calculation - in practice this would be more complex
+        n_studies = self.data[self.study_col].nunique()
+        return max(1, n_studies - 1)
+
+# ===================================================================
+# SELECTION MODELS AND SMALL-STUDY BIAS (PHASE 2)
+# ===================================================================
+
+class SelectionModels:
+    """Selection models for publication bias correction"""
+    
+    @staticmethod
+    def vevea_hedges_model(effects: np.ndarray, se: np.ndarray, 
+                          p_values: np.ndarray = None, 
+                          intervals: List[Tuple[float, float]] = None) -> Dict[str, Any]:
+        """
+        Vevea-Hedges weight-function selection model
+        
+        Parameters:
+        effects: Array of effect sizes
+        se: Array of standard errors
+        p_values: Array of p-values (calculated if None)
+        intervals: P-value intervals for weight function
+        """
+        
+        # Check for optional optimization dependencies
+        try:
+            from scipy.optimize import minimize
+        except ImportError:
+            return {
+                'available': False,
+                'message': 'scipy.optimize not available for selection models'
+            }
+            
+        if p_values is None:
+            z_scores = effects / se
+            p_values = 2 * (1 - norm.cdf(np.abs(z_scores)))
+            
+        if intervals is None:
+            # Default p-value intervals
+            intervals = [(0.0, 0.01), (0.01, 0.05), (0.05, 0.1), (0.1, 1.0)]
+            
+        # Weight function parameters (to be estimated)
+        n_intervals = len(intervals)
+        
+        def neg_log_likelihood(params):
+            """Negative log-likelihood for selection model"""
+            mu = params[0]  # Mean effect
+            tau2 = max(0, params[1])  # Heterogeneity
+            weights = params[2:]  # Weight function parameters
+            
+            # Ensure weights are positive
+            weights = np.exp(weights)
+            weights = weights / weights[0]  # Normalize to first interval
+            
+            ll = 0.0
+            for i in range(len(effects)):
+                # Study likelihood
+                var_i = se[i]**2 + tau2
+                study_ll = norm.logpdf(effects[i], mu, np.sqrt(var_i))
+                
+                # Weight function contribution
+                p_val = p_values[i]
+                weight = 1.0
+                for j, (low, high) in enumerate(intervals):
+                    if low <= p_val < high:
+                        weight = weights[min(j, len(weights)-1)]
+                        break
+                        
+                ll += study_ll + np.log(weight)
+                
+            return -ll
+            
+        # Initial parameter values
+        initial_mu = np.mean(effects)
+        initial_tau2 = max(0.01, np.var(effects) - np.mean(se**2))
+        initial_weights = np.ones(n_intervals)
+        
+        initial_params = [initial_mu, initial_tau2] + initial_weights.tolist()
+        
+        try:
+            # Optimize
+            result = minimize(neg_log_likelihood, initial_params, 
+                            method='BFGS', options={'maxiter': 1000})
+            
+            if result.success:
+                mu_est = result.x[0]
+                tau2_est = max(0, result.x[1])
+                weight_est = np.exp(result.x[2:])
+                weight_est = weight_est / weight_est[0]
+                
+                # Calculate standard errors (simplified)
+                se_mu = np.sqrt(tau2_est / len(effects))
+                
+                return {
+                    'available': True,
+                    'mu': mu_est,
+                    'tau2': tau2_est,
+                    'se_mu': se_mu,
+                    'weights': weight_est,
+                    'intervals': intervals,
+                    'converged': True
+                }
+            else:
+                return {
+                    'available': True,
+                    'converged': False,
+                    'message': 'Optimization failed to converge'
+                }
+                
+        except Exception as e:
+            return {
+                'available': True,
+                'converged': False,
+                'message': f'Optimization error: {str(e)}'
+            }
+
+class BiasTestSuite:
+    """Extended suite of bias tests and corrections"""
+    
+    @staticmethod
+    def peters_test(effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
+        """Peters test for binary outcome data"""
+        try:
+            # Weight by sample size proxy (1/se^2)
+            weights = 1 / (se**2)
+            
+            # Simple regression implementation
+            from scipy.stats import linregress
+            slope, intercept, r_value, p_value, std_err = linregress(weights, effects)
+            
+            return {
+                'slope': slope,
+                'intercept': intercept, 
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+        except:
+            return {'available': False}
+            
+    @staticmethod  
+    def arcsine_test(effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
+        """Arcsine test for proportions"""
+        try:
+            # Transform effects using arcsine transformation
+            transformed_effects = np.arcsin(np.sqrt(np.abs(effects)))
+            
+            # Simple correlation test with SE
+            from scipy.stats import pearsonr
+            corr, p_value = pearsonr(transformed_effects, se)
+            
+            return {
+                'correlation': corr,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+        except:
+            return {'available': False}
+            
+    @staticmethod
+    def p_curve_stub() -> Dict[str, Any]:
+        """P-curve analysis stub"""
+        return {
+            'available': False,
+            'message': 'P-curve analysis requires additional implementation'
+        }
+        
+    @staticmethod
+    def p_uniform_stub() -> Dict[str, Any]:
+        """P-uniform analysis stub"""
+        return {
+            'available': False,
+            'message': 'P-uniform analysis requires additional implementation'
+        }
+
+# ===================================================================
+# EFFECT-SIZE CALCULATORS AND CONVERTERS (PHASE 2: METAFOR::ESCALC PARITY)
+# ===================================================================
+
+class EffectSizeCalculators:
+    """Effect size calculation and conversion utilities"""
+    
+    @staticmethod
+    def log_odds_ratio(events1: np.ndarray, n1: np.ndarray, 
+                      events2: np.ndarray, n2: np.ndarray,
+                      continuity_correction: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate log odds ratio with continuity correction"""
+        
+        # Apply continuity correction for zero cells
+        events1_cc = events1 + continuity_correction
+        events2_cc = events2 + continuity_correction
+        non_events1_cc = (n1 - events1) + continuity_correction
+        non_events2_cc = (n2 - events2) + continuity_correction
+        
+        # Log odds ratio
+        lor = np.log((events1_cc * non_events2_cc) / (non_events1_cc * events2_cc))
+        
+        # Variance
+        var_lor = (1/events1_cc + 1/non_events1_cc + 1/events2_cc + 1/non_events2_cc)
+        
+        return lor, np.sqrt(var_lor)
+        
+    @staticmethod
+    def log_risk_ratio(events1: np.ndarray, n1: np.ndarray,
+                      events2: np.ndarray, n2: np.ndarray,
+                      continuity_correction: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate log risk ratio with continuity correction"""
+        
+        # Apply continuity correction
+        events1_cc = events1 + continuity_correction
+        events2_cc = events2 + continuity_correction
+        n1_cc = n1 + 2 * continuity_correction
+        n2_cc = n2 + 2 * continuity_correction
+        
+        # Log risk ratio
+        lrr = np.log((events1_cc/n1_cc) / (events2_cc/n2_cc))
+        
+        # Variance
+        var_lrr = (1/events1_cc - 1/n1_cc + 1/events2_cc - 1/n2_cc)
+        
+        return lrr, np.sqrt(var_lrr)
+        
+    @staticmethod
+    def hedges_g(mean1: np.ndarray, sd1: np.ndarray, n1: np.ndarray,
+                mean2: np.ndarray, sd2: np.ndarray, n2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate Hedges' g with small-sample correction"""
+        
+        # Pooled standard deviation
+        pooled_sd = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
+        
+        # Cohen's d
+        cohens_d = (mean1 - mean2) / pooled_sd
+        
+        # Small-sample correction factor (J)
+        df = n1 + n2 - 2
+        j = 1 - (3 / (4 * df - 1))
+        
+        # Hedges' g
+        hedges_g = j * cohens_d
+        
+        # Variance
+        var_g = ((n1 + n2) / (n1 * n2) + hedges_g**2 / (2 * (n1 + n2 - 2))) * j**2
+        
+        return hedges_g, np.sqrt(var_g)
+        
+    @staticmethod
+    def standardized_mean_change(mean_pre: np.ndarray, sd_pre: np.ndarray,
+                               mean_post: np.ndarray, sd_post: np.ndarray,
+                               n: np.ndarray, r: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate standardized mean change (within-subject)"""
+        
+        # Change score
+        mean_change = mean_post - mean_pre
+        
+        # Standard deviation of change (assuming correlation r)
+        sd_change = np.sqrt(sd_pre**2 + sd_post**2 - 2 * r * sd_pre * sd_post)
+        
+        # Standardized mean change
+        smc = mean_change / sd_change
+        
+        # Variance (approximate)
+        var_smc = (1/n + smc**2/(2*n)) * 2 * (1 - r)
+        
+        return smc, np.sqrt(var_smc)
+        
+    @staticmethod
+    def fisher_z_transform(correlations: np.ndarray, n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Fisher z-transformation for correlations"""
+        
+        # Constrain correlations to avoid infinite values
+        r = np.clip(correlations, -0.999, 0.999)
+        
+        # Fisher z-transform
+        z = 0.5 * np.log((1 + r) / (1 - r))
+        
+        # Variance
+        var_z = 1 / (n - 3)
+        
+        return z, np.sqrt(var_z)
+        
+    @staticmethod
+    def fisher_z_inverse(z_values: np.ndarray) -> np.ndarray:
+        """Inverse Fisher z-transformation"""
+        return (np.exp(2 * z_values) - 1) / (np.exp(2 * z_values) + 1)
+        
+    @staticmethod
+    def arcsine_transform(proportions: np.ndarray, n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Arcsine transformation for proportions"""
+        
+        # Arcsine transformation
+        asin_p = np.arcsin(np.sqrt(proportions))
+        
+        # Variance
+        var_asin = 1 / (4 * n)
+        
+        return asin_p, np.sqrt(var_asin)
+
+class EffectSizeConverters:
+    """Converters between different effect size metrics"""
+    
+    @staticmethod
+    def d_to_r(d: float) -> float:
+        """Convert Cohen's d to correlation (approximate)"""
+        return d / np.sqrt(d**2 + 4)
+        
+    @staticmethod
+    def r_to_d(r: float) -> float:
+        """Convert correlation to Cohen's d (approximate)"""
+        return 2 * r / np.sqrt(1 - r**2)
+        
+    @staticmethod
+    def d_to_or(d: float) -> float:
+        """Convert Cohen's d to odds ratio (approximate)"""
+        return np.exp(d * np.pi / np.sqrt(3))
+        
+    @staticmethod
+    def or_to_d(odds_ratio: float) -> float:
+        """Convert odds ratio to Cohen's d (approximate)"""
+        return np.log(odds_ratio) * np.sqrt(3) / np.pi
+        
+    @staticmethod
+    def g_to_d(g: float, n1: int, n2: int) -> float:
+        """Convert Hedges' g to Cohen's d"""
+        df = n1 + n2 - 2
+        j = 1 - (3 / (4 * df - 1))
+        return g / j
+
+# ===================================================================
+# IMPORT/EXPORT AND R-COMPAT ERGONOMICS (PHASE 2)
+# ===================================================================
+
+class RCompatibility:
+    """R compatibility functions for seamless integration"""
+    
+    @staticmethod
+    def read_metafor_csv(filepath: str, effect_col: str = 'yi', 
+                        se_col: str = 'sei', study_col: str = 'study') -> pd.DataFrame:
+        """Read metafor-like CSV files"""
+        try:
+            df = pd.read_csv(filepath)
+            
+            # Validate required columns
+            required_cols = [effect_col, study_col]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(f"Missing required columns: {missing_cols}")
+                
+            # Handle variance columns
+            if se_col in df.columns:
+                df['vi'] = df[se_col]**2
+            elif 'vi' in df.columns:
+                df[se_col] = np.sqrt(df['vi'])
+            else:
+                raise ValueError("Either sei or vi column must be present")
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error reading CSV file: {e}")
+            raise
+            
+    @staticmethod
+    def export_for_netmeta(network_data: NetworkMetaData, filepath: str):
+        """Export network data in netmeta-compatible format"""
+        try:
+            # Convert to long-format with required columns
+            export_data = network_data.data.copy()
+            export_data = export_data.rename(columns={
+                'study': 'studlab',
+                'treatment': 'treat', 
+                'yi': 'TE',
+                'sei': 'seTE'
+            })
+            
+            # Add additional columns that netmeta expects
+            if 'n' in export_data.columns:
+                export_data['n'] = export_data['n']
+            if 'events' in export_data.columns:
+                export_data['event'] = export_data['events']
+                
+            export_data.to_csv(filepath, index=False)
+            logger.info(f"Network data exported to {filepath}")
+            
+        except Exception as e:
+            logger.error(f"Error exporting data: {e}")
+            raise
+            
+    @staticmethod
+    def generate_r_script(analysis_results: Dict[str, Any], 
+                         output_path: str = "reproduce_in_r.R") -> str:
+        """Generate R script to reproduce main results"""
+        
+        r_script = """
+# R script to reproduce Metapython results
+# Generated automatically for parity checking
+
+library(metafor)
+library(netmeta)
+
+# Load data (assumes CSV export from Metapython)
+# data <- read.csv("your_data.csv")
+
+# Standard meta-analysis
+# res_fe <- rma(yi, vi, data=data, method="FE")
+# res_re <- rma(yi, vi, data=data, method="REML")
+
+# Network meta-analysis  
+# net <- netmeta(TE, seTE, treat, studlab, data=data)
+
+# Print results for comparison
+# print(res_fe)
+# print(res_re)
+# print(net)
+
+# Note: Adapt variable names and methods to match your specific analysis
+"""
+
+        try:
+            with open(output_path, 'w') as f:
+                f.write(r_script)
+            return output_path
+        except Exception as e:
+            logger.error(f"Error writing R script: {e}")
+            return ""
+
+# ===================================================================
 # VERSION INFORMATION
 # ===================================================================
 
@@ -3762,6 +4999,19 @@ __all__ = [
     'EnhancedTrialSequentialAnalysis',
     'EnhancedGRADE',
     'PerformanceOptimization',
+    # Phase 2 additions
+    'NetworkMetaData',
+    'NetworkMetaAnalysis',
+    'NetworkConsistencyResults',
+    'NetworkGeometry',
+    'MultilevelMetaAnalysis',
+    'MultilevelResults',
+    'CorrelatedEffectsAnalysis',
+    'SelectionModels',
+    'BiasTestSuite',
+    'EffectSizeCalculators',
+    'EffectSizeConverters',
+    'RCompatibility',
     'quick_meta',
     'meta_from_summary_stats',
     'run_unified_demo'
