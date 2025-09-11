@@ -2224,16 +2224,20 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    ax.axvline(pet_peese['corrected_effect'], color='green', 
-                             linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                    corrected_effect = pet_peese.get('corrected_effect', None)
+                    if corrected_effect is not None:
+                        ax.axvline(corrected_effect, color='green', 
+                                 linestyle=':', linewidth=2, 
+                                 label=f'PET-PEESE = {fmt_num(corrected_effect)}')
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
                 if trim_fill['n_imputed'] > 0:
-                    ax.axvline(trim_fill['adjusted_effect'], color='orange', 
-                             linestyle='-.', linewidth=2,
-                             label=f'Trim-fill = {trim_fill["adjusted_effect"]:.3f}')
+                    adjusted_effect = trim_fill.get('adjusted_effect', None)
+                    if adjusted_effect is not None:
+                        ax.axvline(adjusted_effect, color='orange', 
+                                 linestyle='-.', linewidth=2,
+                                 label=f'Trim-fill = {fmt_num(adjusted_effect)}')
         
         ax.set_xlabel('Effect Size', fontsize=12)
         ax.set_ylabel('Standard Error', fontsize=12)
@@ -2499,7 +2503,8 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                    corrected_effect = pet_peese.get('corrected_effect', None)
+                    report.append(f"PET-PEESE corrected: {fmt_num(corrected_effect)}")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2516,7 +2521,7 @@ class UnifiedMetaAnalysis:
             if hasattr(conflict, 'conflicting'):
                 if conflict.conflicting:
                     report.append(f"Conflicting results detected: {conflict.k} clusters")
-                    report.append(f"Maximum difference: {conflict.delta:.3f}")
+                    report.append(f"Maximum difference: {fmt_num(getattr(conflict, 'delta', None))}")
                 else:
                     report.append("No significant conflicts detected")
             report.append("")
