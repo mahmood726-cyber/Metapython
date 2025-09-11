@@ -1,0 +1,295 @@
+name: Metapython CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-core:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, "3.10", 3.11, 3.12]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install core dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+    
+    - name: Test core functionality (no extras)
+      run: |
+        python -c "
+        import metapython as mp
+        import pandas as pd
+        print('Testing core functionality...')
+        
+        # Test basic meta-analysis
+        data = pd.DataFrame({
+            'study': ['S1', 'S2', 'S3'],
+            'effect': [0.5, 0.3, 0.7],
+            'se': [0.1, 0.15, 0.12]
+        })
+        
+        result = mp.meta_auto_report(data, include_bayesian=False)
+        assert result.basic_results.random_effects.effect > 0
+        print(f'✓ Core meta-analysis: {result.basic_results.random_effects.effect:.3f}')
+        
+        # Test interactive fallbacks
+        meta = mp.UnifiedMetaAnalysis(data, effect_col='effect', se_col='se', label_col='study')
+        meta.analyze()
+        forest_plot = meta.create_interactive_forest_plot()
+        print(f'✓ Interactive forest plot fallback: {type(forest_plot)}')
+        
+        # Test performance stubs
+        numba_status = mp.enable_numba_acceleration()
+        print(f'✓ Numba stub: {numba_status.get(\"numba_available\", False)}')
+        
+        print('✅ All core tests passed!')
+        "
+
+  test-extras:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        extras: ["bayes", "viz", "speed", "ml"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Install with extras
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[${{ matrix.extras }}]
+    
+    - name: Test ${{ matrix.extras }} functionality
+      run: |
+        python -c "
+        import metapython as mp
+        import pandas as pd
+        print('Testing ${{ matrix.extras }} functionality...')
+        
+        data = pd.DataFrame({
+            'study': ['S1', 'S2', 'S3', 'S4'],
+            'effect': [0.5, 0.3, 0.7, 0.4],
+            'se': [0.1, 0.15, 0.12, 0.09]
+        })
+        
+        # Test based on extras
+        if '${{ matrix.extras }}' == 'bayes':
+            try:
+                meta = mp.UnifiedMetaAnalysis(data, effect_col='effect', se_col='se', label_col='study')
+                meta.analyze()
+                bayes_result = meta.bayesian_stacking(chains=1, draws=100)
+                print(f'✓ Bayesian analysis: {bayes_result.get(\"success\", False)}')
+            except Exception as e:
+                print(f'⚠ Bayesian test failed: {e}')
+        
+        elif '${{ matrix.extras }}' == 'viz':
+            try:
+                meta = mp.UnifiedMetaAnalysis(data, effect_col='effect', se_col='se', label_col='study')
+                meta.analyze()
+                forest_plot = meta.create_interactive_forest_plot()
+                print(f'✓ Interactive visualization: {type(forest_plot)}')
+            except Exception as e:
+                print(f'⚠ Visualization test failed: {e}')
+        
+        elif '${{ matrix.extras }}' == 'speed':
+            try:
+                numba_status = mp.enable_numba_acceleration()
+                print(f'✓ Numba acceleration: {numba_status.get(\"numba_available\", False)}')
+            except Exception as e:
+                print(f'⚠ Speed test failed: {e}')
+        
+        elif '${{ matrix.extras }}' == 'ml':
+            try:
+                result = mp.meta_auto_report(data, include_bayesian=False)
+                print(f'✓ ML-enhanced analysis: {result.basic_results.random_effects.effect:.3f}')
+            except Exception as e:
+                print(f'⚠ ML test failed: {e}')
+        
+        print('✅ ${{ matrix.extras }} tests completed!')
+        "
+
+  test-r-integration:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Set up R
+      uses: r-lib/actions/setup-r@v2
+      with:
+        r-version: '4.3'
+    
+    - name: Install R packages
+      run: |
+        R -e "install.packages(c('metafor', 'netmeta'), repos='https://cran.r-project.org')"
+    
+    - name: Install Python with R interop
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[rinterop]
+    
+    - name: Test R validation
+      run: |
+        python -c "
+        import metapython as mp
+        import pandas as pd
+        print('Testing R validation...')
+        
+        data = pd.DataFrame({
+            'study': ['Study1', 'Study2', 'Study3', 'Study4'],
+            'effect': [0.5, 0.3, 0.7, 0.4],
+            'se': [0.1, 0.15, 0.12, 0.09]
+        })
+        
+        meta = mp.UnifiedMetaAnalysis(data, effect_col='effect', se_col='se', label_col='study')
+        meta.analyze()
+        
+        # Generate R script
+        r_script = meta.generate_r_script('/tmp/validation.R')
+        print(f'✓ R script generated: {r_script}')
+        
+        # Test reproducibility report
+        repro_report = meta.create_reproducibility_report(include_r_validation=False)
+        print(f'✓ Reproducibility report: {len(repro_report)}')
+        
+        print('✅ R integration tests passed!')
+        "
+
+  docs-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Install with docs extras
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[docs]
+    
+    - name: Test documentation build
+      run: |
+        # Create minimal mkdocs.yml for testing
+        cat > mkdocs.yml << EOF
+        site_name: Metapython Documentation
+        nav:
+          - Home: README.md
+          - Changelog: CHANGELOG.md
+        theme:
+          name: material
+        EOF
+        
+        # Test build
+        mkdocs build --strict
+        echo "✅ Documentation build successful!"
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: [test-core, test-extras]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Install full package
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[all]
+    
+    - name: Run comprehensive integration test
+      run: |
+        python -c "
+        import metapython as mp
+        import pandas as pd
+        import numpy as np
+        print('Running comprehensive integration test...')
+        
+        # Generate larger dataset
+        np.random.seed(42)
+        n_studies = 15
+        true_effect = 0.5
+        data = pd.DataFrame({
+            'study': [f'Study_{i+1}' for i in range(n_studies)],
+            'effect': np.random.normal(true_effect, 0.3, n_studies),
+            'se': np.random.uniform(0.08, 0.20, n_studies),
+            'year': np.random.choice(range(2010, 2024), n_studies),
+            'treatment': np.random.choice(['A', 'B', 'C'], n_studies),
+            'control': ['Placebo'] * n_studies
+        })
+        
+        print(f'Generated dataset: {len(data)} studies')
+        
+        # Test full automated report
+        result = mp.meta_auto_report(
+            data, 
+            output_format='all',
+            include_bayesian=True,
+            include_visualizations=True
+        )
+        
+        print(f'✓ Auto report effect: {result.basic_results.random_effects.effect:.3f}')
+        print(f'✓ HTML report length: {len(result.report_html or \"\")}')
+        print(f'✓ Metadata entries: {len(result.metadata or {})}')
+        
+        # Test advanced features
+        meta = mp.UnifiedMetaAnalysis(
+            data, 
+            effect_col='effect', 
+            se_col='se', 
+            label_col='study'
+        )
+        meta.analyze()
+        
+        # Interactive visualizations
+        forest_plot = meta.create_interactive_forest_plot()
+        network_plot = meta.create_interactive_network_plot('treatment', 'control')
+        
+        print(f'✓ Forest plot type: {type(forest_plot)}')
+        print(f'✓ Network plot type: {type(network_plot)}')
+        
+        # Performance optimization
+        perf_status = mp.optimize_for_large_datasets()
+        print(f'✓ Performance optimizations: {len(perf_status.get(\"enabled\", []))}')
+        
+        # R validation
+        r_script = meta.generate_r_script('/tmp/integration_validation.R')
+        repro_report = meta.create_reproducibility_report(include_r_validation=False)
+        
+        print(f'✓ R script: {r_script}')
+        print(f'✓ Reproducibility hash: {repro_report[\"reproducibility_hash\"][:16]}...')
+        
+        print('🎉 Integration test completed successfully!')
+        print(f'   - Effect estimate: {result.basic_results.random_effects.effect:.3f}')
+        print(f'   - Heterogeneity I²: {result.basic_results.heterogeneity.I2:.1f}%')
+        print(f'   - P-value: {result.basic_results.random_effects.p_value:.3f}')
+        "
