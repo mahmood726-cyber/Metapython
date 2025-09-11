@@ -18,7 +18,12 @@ Version: 3.0.0
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+
+# Set matplotlib backend for headless environments if not already set
+import os
+if 'MPLBACKEND' not in os.environ:
+    os.environ['MPLBACKEND'] = 'Agg'
+
 from scipy import stats
 from scipy.stats import norm, chi2, t
 from scipy.optimize import minimize
@@ -27,13 +32,50 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
-import os
 import datetime
 import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Safe seaborn import with graceful fallback for headless environments
+try:
+    import seaborn as sns
+    HAS_SEABORN = True
+except ImportError:
+    HAS_SEABORN = False
+    logger.warning("Seaborn not available - some visualizations disabled")
+except Exception as e:
+    HAS_SEABORN = False
+    logger.warning(f"Seaborn import failed: {e} - some visualizations disabled")
+
+def fmt_num(value, decimals: int = 3) -> str:
+    """
+    Safely format numeric values for printing.
+    
+    Args:
+        value: The value to format
+        decimals: Number of decimal places
+        
+    Returns:
+        Formatted string - 'N/A' for None, str() for non-numeric, formatted for numeric
+    """
+    if value is None:
+        return 'N/A'
+    
+    # Handle string values
+    if isinstance(value, str):
+        return value
+    
+    # Try to format as numeric
+    try:
+        if isinstance(value, (int, float)) and not (np.isnan(value) or np.isinf(value)):
+            return f"{float(value):.{decimals}f}"
+        else:
+            return 'N/A'
+    except (TypeError, ValueError):
+        return str(value)
 
 # Optional dependencies with graceful fallback
 try:
@@ -2204,10 +2246,10 @@ class UnifiedMetaAnalysis:
             bias = self.results.bias_assessment
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
+                if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
                     ax.axvline(pet_peese['corrected_effect'], color='green', 
                              linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                             label=f'PET-PEESE = {fmt_num(pet_peese["corrected_effect"])}')
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2386,11 +2428,11 @@ class UnifiedMetaAnalysis:
         fe = self.results.fixed_effects
         rows.append({
             'Model': 'Fixed Effects',
-            'Effect': f"{fe.effect:.3f}",
-            'SE': f"{fe.se:.3f}",
-            '95% CI': f"[{fe.ci_low:.3f}, {fe.ci_high:.3f}]",
-            'Z/t': f"{fe.z_statistic:.2f}",
-            'p-value': f"{fe.p_value:.3f}",
+            'Effect': fmt_num(fe.effect),
+            'SE': fmt_num(fe.se),
+            '95% CI': f"[{fmt_num(fe.ci_low)}, {fmt_num(fe.ci_high)}]",
+            'Z/t': fmt_num(fe.z_statistic, 2),
+            'p-value': fmt_num(fe.p_value),
             'Notes': 'Assumes τ² = 0'
         })
         
@@ -2398,23 +2440,23 @@ class UnifiedMetaAnalysis:
         re = self.results.random_effects
         rows.append({
             'Model': 'Random Effects',
-            'Effect': f"{re.effect:.3f}",
-            'SE': f"{re.se:.3f}",
-            '95% CI': f"[{re.ci_low:.3f}, {re.ci_high:.3f}]",
-            'Z/t': f"{re.z_statistic:.2f}",
-            'p-value': f"{re.p_value:.3f}",
-            'Notes': f"τ² = {re.tau2:.3f} ({self.config.tau2_method})"
+            'Effect': fmt_num(re.effect),
+            'SE': fmt_num(re.se),
+            '95% CI': f"[{fmt_num(re.ci_low)}, {fmt_num(re.ci_high)}]",
+            'Z/t': fmt_num(re.z_statistic, 2),
+            'p-value': fmt_num(re.p_value),
+            'Notes': f"τ² = {fmt_num(re.tau2)} ({self.config.tau2_method})"
         })
         
         # Heterogeneity row
         het = self.results.heterogeneity
         rows.append({
             'Model': 'Heterogeneity',
-            'Effect': f"I² = {het.I2:.1f}%",
-            'SE': f"H² = {het.H2:.2f}",
-            '95% CI': f"τ² = {het.tau2:.3f}",
-            'Z/t': f"Q = {het.Q:.2f}",
-            'p-value': f"{het.p_value:.3f}",
+            'Effect': f"I² = {fmt_num(het.I2, 1)}%",
+            'SE': f"H² = {fmt_num(het.H2, 2)}",
+            '95% CI': f"τ² = {fmt_num(het.tau2)}",
+            'Z/t': f"Q = {fmt_num(het.Q, 2)}",
+            'p-value': fmt_num(het.p_value),
             'Notes': f"df = {het.df}"
         })
         
@@ -2423,9 +2465,9 @@ class UnifiedMetaAnalysis:
             pi = self.results.prediction_interval
             rows.append({
                 'Model': 'Prediction Interval',
-                'Effect': f"{re.effect:.3f}",
-                'SE': f"{pi.se:.3f}",
-                '95% CI': f"[{pi.low:.3f}, {pi.high:.3f}]",
+                'Effect': fmt_num(re.effect),
+                'SE': fmt_num(pi.se),
+                '95% CI': f"[{fmt_num(pi.low)}, {fmt_num(pi.high)}]",
                 'Z/t': '—',
                 'p-value': '—',
                 'Notes': 'Future study range'
@@ -2462,9 +2504,9 @@ class UnifiedMetaAnalysis:
         het = self.results.heterogeneity
         report.append("HETEROGENEITY ASSESSMENT")
         report.append("-" * 23)
-        report.append(f"Q = {het.Q:.2f}, df = {het.df}, p = {het.p_value:.3f}")
-        report.append(f"I² = {het.I2:.1f}%, H² = {het.H2:.2f}")
-        report.append(f"τ² = {het.tau2:.3f}")
+        report.append(f"Q = {fmt_num(het.Q, 2)}, df = {het.df}, p = {fmt_num(het.p_value)}")
+        report.append(f"I² = {fmt_num(het.I2, 1)}%, H² = {fmt_num(het.H2, 2)}")
+        report.append(f"τ² = {fmt_num(het.tau2)}")
         report.append("")
         
         # Publication bias
@@ -2475,12 +2517,12 @@ class UnifiedMetaAnalysis:
             
             if hasattr(bias, 'egger'):
                 egger = bias.egger
-                report.append(f"Egger's test: p = {egger.get('p_value', 'N/A')}")
+                report.append(f"Egger's test: p = {fmt_num(egger.get('p_value', 'N/A'))}")
             
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
+                    report.append(f"PET-PEESE corrected: {fmt_num(pet_peese['corrected_effect'])}")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2503,7 +2545,7 @@ class UnifiedMetaAnalysis:
             report.append("")
         
         # Subgroups
-        if hasattr(self.results, 'subgroups'):
+        if hasattr(self.results, 'subgroups') and self.results.subgroups:
             report.append("SUBGROUP ANALYSIS")
             report.append("-" * 16)
             
@@ -2514,11 +2556,11 @@ class UnifiedMetaAnalysis:
                     eff = result.random_effects.effect
                     ci_low = result.random_effects.ci_low
                     ci_high = result.random_effects.ci_high
-                    report.append(f"{subgroup}: {eff:.3f} [{ci_low:.3f}, {ci_high:.3f}]")
+                    report.append(f"{subgroup}: {fmt_num(eff)} [{fmt_num(ci_low)}, {fmt_num(ci_high)}]")
             
             if '_between_group_test' in self.results.subgroups:
                 between = self.results.subgroups['_between_group_test']
-                report.append(f"Between-group test: p = {between['p_value']:.3f}")
+                report.append(f"Between-group test: p = {fmt_num(between.get('p_value', 'N/A'))}")
             
             report.append("")
         
@@ -3293,13 +3335,13 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
         
         if hasattr(bias, 'egger'):
             egger_p = bias.egger.get('p_value', 'N/A')
-            print(f"Egger test p-value: {egger_p:.3f}" if egger_p != 'N/A' else f"Egger test p-value: {egger_p}")
+            print(f"Egger test p-value: {fmt_num(egger_p)}")
             results['egger_p'] = egger_p
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
             if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
+                print(f"PET-PEESE corrected effect: {fmt_num(pet_peese['corrected_effect'])}")
                 results['pet_peese_effect'] = pet_peese['corrected_effect']
         
         if hasattr(bias, 'trim_fill'):
