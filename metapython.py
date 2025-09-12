@@ -43,11 +43,26 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set PyTensor flags before any PyMC/PyTensor imports to prevent C compilation issues
+os.environ['PYTENSOR_FLAGS'] = "mode=FAST_COMPILE,linker=py,optimizer_excluding=constant_folding,compute_test_value=ignore"
+
 # Optional dependencies with graceful fallback
+bayes_ready = False
 try:
     import pymc as pm
     import arviz as az
+    
+    # Lower PyTensor logger verbosity to suppress internal error traces
+    import logging as pt_logging
+    pt_logging.getLogger('pytensor').setLevel(pt_logging.WARNING)
+    pt_logging.getLogger('pytensor.compile').setLevel(pt_logging.WARNING)
+    pt_logging.getLogger('pytensor.tensor.rewriting').setLevel(pt_logging.WARNING)
+    
     HAS_PYMC = True
+    # Check if PYTENSOR_FLAGS is properly set for bayes_ready flag
+    bayes_ready = 'PYTENSOR_FLAGS' in os.environ and 'linker=py' in os.environ['PYTENSOR_FLAGS']
+    if not bayes_ready:
+        logger.info("PyMC available but PyTensor compilation not configured for minimal environments")
 except ImportError:
     HAS_PYMC = False
     logger.info("PyMC not available - Bayesian methods disabled")
@@ -97,6 +112,9 @@ try:
 except ImportError:
     HAS_SPACY = False
     logger.info("spaCy not available - NLP extraction disabled")
+
+# Module-level flag to throttle spaCy model warnings
+_spacy_model_warning_shown = False
 
 try:
     from numba import njit, prange
@@ -346,6 +364,44 @@ def safe_matrix_inverse(A):
         return np.linalg.inv(A)
     except np.linalg.LinAlgError:
         return np.linalg.pinv(A)
+
+def get_corrected_effect(results, default=None):
+    """
+    Helper function to safely get corrected effect from bias assessment results.
+    Tries multiple sources in order and returns default if none available.
+    """
+    if not hasattr(results, 'bias_assessment'):
+        return default
+    
+    bias = results.bias_assessment
+    
+    # Try PET-PEESE corrected effect first
+    if hasattr(bias, 'pet_peese'):
+        pet_peese = bias.pet_peese
+        if isinstance(pet_peese, dict) and pet_peese.get('success', True):
+            corrected = pet_peese.get('corrected_effect')
+            if corrected is not None:
+                return corrected
+    
+    # Try trim-and-fill adjusted effect
+    if hasattr(bias, 'trim_fill'):
+        trim_fill = bias.trim_fill
+        if isinstance(trim_fill, dict) and trim_fill.get('n_imputed', 0) > 0:
+            adjusted = trim_fill.get('adjusted_effect')
+            if adjusted is not None:
+                return adjusted
+    
+    # Return default if no corrected effect available
+    return default
+
+def _fmt_float(value, precision=3):
+    """Format float with fixed precision or return N/A for None/NaN"""
+    if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
+        return "N/A"
+    try:
+        return f"{float(value):.{precision}f}"
+    except (ValueError, TypeError):
+        return "N/A"
 
 # ===================================================================
 # ENHANCED TAU² ESTIMATORS
@@ -701,13 +757,16 @@ class NLPExtractor:
     """NLP-based effect size extraction from text"""
     
     def __init__(self):
+        global _spacy_model_warning_shown
         self.nlp = None
         if HAS_SPACY:
             try:
                 import spacy
                 self.nlp = spacy.load("en_core_web_sm")
             except OSError:
-                logger.warning("spaCy model not found - install with: python -m spacy download en_core_web_sm")
+                if not _spacy_model_warning_shown:
+                    logger.warning("spaCy model not found - install with: python -m spacy download en_core_web_sm")
+                    _spacy_model_warning_shown = True
     
     def extract_effect_sizes(self, text: str) -> Tuple[float, float]:
         """Extract effect size and SE from abstract text"""
@@ -1564,9 +1623,12 @@ class UnifiedMetaAnalysis:
     
     def bayesian_stacking(self, chains: int = None, draws: int = None) -> Dict[str, Any]:
         """Bayesian stacking for model averaging"""
-        if not HAS_PYMC:
-            logger.warning("PyMC not available - Bayesian methods disabled")
-            return {'available': False}
+        if not bayes_ready:
+            if not HAS_PYMC:
+                logger.info("PyMC not available - Bayesian methods disabled")
+            else:
+                logger.info("Bayesian methods disabled - PyTensor compilation not configured for minimal environments")
+            return {'available': False, 'success': False}
         
         if chains is None:
             chains = self.config.bayesian_chains
@@ -2213,9 +2275,14 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    ax.axvline(pet_peese['corrected_effect'], color='green', 
-                             linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                    corrected_effect = get_corrected_effect(self.results)
+                    if corrected_effect is not None:
+                        ax.axvline(corrected_effect, color='green', 
+                                 linestyle=':', linewidth=2, 
+                                 label=f'PET-PEESE = {_fmt_float(corrected_effect)}')
+                    else:
+                        # Degraded notice instead of raising error
+                        logger.info("PET-PEESE correction not available for funnel plot")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2488,7 +2555,11 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                    corrected_effect = get_corrected_effect(self.results)
+                    if corrected_effect is not None:
+                        report.append(f"PET-PEESE corrected: {_fmt_float(corrected_effect)}")
+                    else:
+                        report.append("PET-PEESE corrected: N/A")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -4488,9 +4559,14 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
-            if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
-                results['pet_peese_effect'] = pet_peese['corrected_effect']
+            if pet_peese.get('success', True):
+                corrected_effect = get_corrected_effect(meta.results)
+                if corrected_effect is not None:
+                    print(f"PET-PEESE corrected effect: {_fmt_float(corrected_effect)}")
+                    results['pet_peese_effect'] = corrected_effect
+                else:
+                    print("PET-PEESE corrected effect: N/A")
+                    results['pet_peese_effect'] = None
         
         if hasattr(bias, 'trim_fill'):
             trim_fill = bias.trim_fill
@@ -4601,7 +4677,7 @@ def run_bayesian(meta) -> Dict[str, Any]:
     print_subsection("9. BAYESIAN METHODS", "-")
     
     results = {}
-    if HAS_PYMC:
+    if bayes_ready:
         try:
             bayes_results = meta.bayesian_stacking(chains=2, draws=500)
             if bayes_results.get('success', False):
@@ -4619,8 +4695,12 @@ def run_bayesian(meta) -> Dict[str, Any]:
             print(f"Bayesian analysis failed: {e}")
             results = {'success': False, 'error': str(e)}
     else:
-        print("PyMC not available - Bayesian methods disabled")
-        results = {'success': False, 'reason': 'PyMC not available'}
+        if not HAS_PYMC:
+            print("PyMC not available - Bayesian methods disabled")
+            results = {'success': False, 'reason': 'PyMC not available'}
+        else:
+            print("Bayesian methods disabled - PyTensor compilation not configured for minimal environments")
+            results = {'success': False, 'reason': 'PyTensor compilation not configured'}
     
     return results
 
