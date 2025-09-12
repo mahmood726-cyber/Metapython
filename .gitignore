@@ -48,3 +48,12 @@ venv.bak/
 *.txt
 *.pdf
 *.svg
+
+# Phase 6: Test files and temporary outputs
+test_*.yaml
+test_*.csv
+test_*.html
+*_report.html
+network_report.html
+meta_output/
+artifacts/
