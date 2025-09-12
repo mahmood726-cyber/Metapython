@@ -1,0 +1,83 @@
+version: 2
+updates:
+  # Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "mahmood726-cyber"
+    assignees:
+      - "mahmood726-cyber"
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      core-deps:
+        patterns:
+          - "numpy"
+          - "pandas" 
+          - "scipy"
+          - "matplotlib"
+          - "seaborn"
+      optional-deps:
+        patterns:
+          - "statsmodels"
+          - "scikit-learn"
+          - "pymc*"
+          - "arviz"
+          - "xgboost"
+          - "shap"
+      dev-deps:
+        patterns:
+          - "pytest*"
+          - "black"
+          - "flake8"
+          - "mypy"
+          - "sphinx*"
+      healthcare-deps:
+        patterns:
+          - "fhir*"
+          - "sqlalchemy"
+          - "pyarrow"
+      ml-deps:
+        patterns:
+          - "torch"
+          - "tensorflow*"
+          - "numba"
+          - "dask"
+          - "joblib"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:00"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "mahmood726-cyber"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+
+# Security and vulnerability updates
+ignore:
+  # Ignore patch updates for stable packages
+  - dependency-name: "numpy"
+    update-types: ["version-update:semver-patch"]
+  - dependency-name: "pandas"
+    update-types: ["version-update:semver-patch"]
+  
+  # Pin specific versions that are known to work
+  - dependency-name: "setuptools"
+    versions: [">= 60.0.0"]

@@ -1,0 +1,80 @@
+name: 'Close stale issues and PRs'
+on:
+  schedule:
+    - cron: '30 1 * * *'  # Run daily at 1:30 AM UTC
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v8
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Issues configuration
+          stale-issue-message: |
+            This issue has been automatically marked as stale because it has not had recent activity. 
+            
+            If this issue is still relevant, please:
+            - Comment to let us know you're still experiencing this problem
+            - Provide any additional information that might help us resolve it
+            - Run `meta doctor` and share the output if it's related to environment issues
+            
+            This issue will be closed in 7 days if no further activity occurs.
+            
+            Thank you for your contribution to MetaPython! 🔬
+          
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity.
+            
+            If you're still experiencing this problem, please feel free to reopen the issue with:
+            - Updated information about your environment (`meta doctor` output)
+            - Current steps to reproduce the issue
+            - Any workarounds you've tried
+            
+            We appreciate your understanding and contribution to MetaPython! 🙏
+          
+          stale-issue-label: 'stale'
+          exempt-issue-labels: 'pinned,security,critical,good first issue'
+          days-before-issue-stale: 60
+          days-before-issue-close: 7
+          
+          # Pull requests configuration
+          stale-pr-message: |
+            This pull request has been automatically marked as stale because it has not had recent activity.
+            
+            If this PR is still relevant, please:
+            - Rebase on the latest main branch if needed
+            - Address any merge conflicts
+            - Respond to any outstanding review comments
+            - Run tests to ensure they still pass
+            
+            This PR will be closed in 14 days if no further activity occurs.
+            
+            Thank you for your contribution to MetaPython! 🚀
+          
+          close-pr-message: |
+            This pull request has been automatically closed due to inactivity.
+            
+            If you'd like to continue working on this, please feel free to reopen and:
+            - Rebase on the latest main branch
+            - Ensure all tests pass
+            - Address any review feedback
+            
+            We appreciate your contribution to MetaPython! 🙏
+          
+          stale-pr-label: 'stale'
+          exempt-pr-labels: 'pinned,security,critical,work-in-progress'
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          
+          # Only process a limited number to avoid rate limits
+          operations-per-run: 30
+          
+          # Custom messages for different issue types
+          exempt-all-milestones: true
+          ascending: true

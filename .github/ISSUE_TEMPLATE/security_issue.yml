@@ -1,0 +1,79 @@
+name: Security Issue
+description: Report a security vulnerability (use this for sensitive issues)
+title: "[Security]: "
+labels: ["security", "needs-triage"]
+assignees:
+  - mahmood726-cyber
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **IMPORTANT**: If this is a critical security vulnerability, please contact us privately at security@metapython.example.com instead of creating a public issue.
+
+  - type: textarea
+    id: vulnerability-description
+    attributes:
+      label: Vulnerability Description
+      description: Describe the security issue you've found
+      placeholder: The vulnerability allows...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity Level
+      description: How severe do you consider this vulnerability?
+      options:
+        - Critical (immediate action required)
+        - High (significant risk)
+        - Medium (moderate risk)
+        - Low (minimal risk)
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected-components
+    attributes:
+      label: Affected Components
+      description: Which parts of MetaPython are affected?
+      placeholder: |
+        - Federated analysis module
+        - CLI authentication
+        - Data processing pipeline
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can this vulnerability be exploited?
+      placeholder: |
+        1. Configure federated client
+        2. Send malicious payload
+        3. Observe unauthorized access
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Potential Impact
+      description: What could an attacker achieve?
+      placeholder: An attacker could...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: responsible-disclosure
+    attributes:
+      label: Responsible Disclosure
+      description: Please confirm your commitment to responsible disclosure
+      options:
+        - label: I will not publicly disclose this vulnerability until a fix is available
+          required: true
+        - label: I have not shared this vulnerability information with others
+          required: true
+        - label: I understand this may take time to investigate and fix
+          required: true

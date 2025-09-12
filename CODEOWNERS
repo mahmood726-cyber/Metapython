@@ -1,0 +1,32 @@
+# MetaPython Code Ownership and Review Guidelines
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owners
+* @mahmood726-cyber
+
+# Core meta-analysis algorithms
+metapython.py @mahmood726-cyber
+meta_pipeline.yaml @mahmood726-cyber
+
+# Documentation
+docs/ @mahmood726-cyber
+*.md @mahmood726-cyber
+
+# Configuration and workflows
+.github/ @mahmood726-cyber
+*.yaml @mahmood726-cyber
+*.yml @mahmood726-cyber
+
+# Security and governance
+SECURITY.md @mahmood726-cyber
+CODEOWNERS @mahmood726-cyber
+
+# Phase 9 specific components
+# CLI and diagnostics
+metapython.py @mahmood726-cyber # Lines 5500-6000 (Phase 9 CLI)
+
+# Healthcare integrations (require domain expertise)
+metapython.py @mahmood726-cyber # Lines 6600-6800 (FHIR/OMOP)
+
+# Federated analysis (requires security review)
+metapython.py @mahmood726-cyber # Lines 7000-7200 (Federated)

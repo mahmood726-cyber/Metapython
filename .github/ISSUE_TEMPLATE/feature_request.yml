@@ -1,0 +1,87 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for MetaPython
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+assignees:
+  - mahmood726-cyber
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide as much detail as possible to help us understand your needs.
+
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature you'd like to see
+      placeholder: I would like to see...
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+      placeholder: This feature would help me...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature-category
+    attributes:
+      label: Feature Category
+      description: What category does this feature belong to?
+      options:
+        - Core meta-analysis algorithms
+        - Data import/export
+        - Visualization and reporting
+        - CLI and user interface
+        - Healthcare data integration
+        - Federated analysis
+        - Performance optimization
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical (blocking my work)
+        - High (would significantly improve my workflow)
+        - Medium (would be nice to have)
+        - Low (not urgent)
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: How do you think this feature should be implemented?
+      placeholder: I think this could be implemented by...
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternatives have you considered?
+      placeholder: I've also considered...
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      description: Please confirm the following
+      options:
+        - label: I have searched existing issues for this feature request
+          required: true
+        - label: I have checked the documentation to see if this feature already exists
+          required: true
+        - label: This feature would benefit the broader MetaPython community
+          required: true
