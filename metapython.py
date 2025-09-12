@@ -971,6 +971,28 @@ class UnifiedMetaAnalysis:
         self.subgroup_col = subgroup_col
         self.config = config or UnifiedMetaConfig()
         
+        # Phase 8: Initialize enterprise features
+        self.observability = None
+        self.security = None
+        self.data_connector = None
+        self.orchestration = None
+        self.accessibility = None
+        
+        if HAS_OBSERVABILITY_MODULE:
+            self.observability = get_observability()
+        
+        if HAS_SECURITY_MODULE:
+            self.security = get_security()
+        
+        if HAS_DATA_CONNECTORS_MODULE:
+            self.data_connector = DataConnectorManager()
+        
+        if HAS_ORCHESTRATION_MODULE:
+            self.orchestration = get_orchestration()
+        
+        if HAS_ACCESSIBILITY_MODULE:
+            self.accessibility = get_accessibility()
+        
         if validate_data:
             self._validate_data()
         
@@ -5906,13 +5928,211 @@ class AdvancedMultivariateStructures:
             }
 
 # ===================================================================
-# VERSION INFORMATION
+# PHASE 8 ENHANCEMENTS - IMPORT NEW MODULES
 # ===================================================================
 
-__version__ = "0.4.0"
+# Import Phase 8 modules with graceful fallbacks
+try:
+    from performance import (
+        PerformanceProfiler, PerformanceOptimizer, StreamingMetaAnalysis,
+        profile_performance, PerformanceContext, global_profiler
+    )
+    HAS_PERFORMANCE_MODULE = True
+except ImportError:
+    HAS_PERFORMANCE_MODULE = False
+    logger.info("Performance module not available - advanced profiling disabled")
+
+try:
+    from observability import (
+        ObservabilityManager, ObservabilityConfig, TelemetryManager,
+        initialize_observability, get_observability, trace_operation, monitor_performance
+    )
+    HAS_OBSERVABILITY_MODULE = True
+except ImportError:
+    HAS_OBSERVABILITY_MODULE = False
+    logger.info("Observability module not available - monitoring disabled")
+
+try:
+    from security import (
+        SecurityManager, SecurityConfig, PIIScanner, EncryptionManager,
+        initialize_security, get_security
+    )
+    HAS_SECURITY_MODULE = True
+except ImportError:
+    HAS_SECURITY_MODULE = False
+    logger.info("Security module not available - security features disabled")
+
+try:
+    from data_connectors import (
+        DataConnectorManager, ArrowDataConnector, EnhancedCSVConnector,
+        DataLoadResult, SchemaValidator
+    )
+    HAS_DATA_CONNECTORS_MODULE = True
+except ImportError:
+    HAS_DATA_CONNECTORS_MODULE = False
+    logger.info("Data connectors module not available - enhanced I/O disabled")
+
+try:
+    from orchestration import (
+        OrchestrationManager, QueueManager, ArtifactStore, JobSpec, JobResult,
+        initialize_orchestration, get_orchestration, submit_meta_analysis_job
+    )
+    HAS_ORCHESTRATION_MODULE = True
+except ImportError:
+    HAS_ORCHESTRATION_MODULE = False
+    logger.info("Orchestration module not available - distributed execution disabled")
+
+try:
+    from accessibility import (
+        AccessibilityManager, AccessibilityConfig, LanguageManager,
+        initialize_accessibility, get_accessibility, translate, format_localized_number
+    )
+    HAS_ACCESSIBILITY_MODULE = True
+except ImportError:
+    HAS_ACCESSIBILITY_MODULE = False
+    logger.info("Accessibility module not available - i18n features disabled")
+
+try:
+    from auth import (
+        AuthenticationManager, AuthConfig, UserRole, Permission,
+        initialize_auth, get_auth
+    )
+    HAS_AUTH_MODULE = True
+except ImportError:
+    HAS_AUTH_MODULE = False
+    logger.info("Authentication module not available - auth features disabled")
+
+# ===================================================================
+# PHASE 8 ENTERPRISE INITIALIZATION
+# ===================================================================
+
+def initialize_enterprise_features(observability_config=None, security_config=None,
+                                 auth_config=None, accessibility_config=None,
+                                 orchestration_config=None):
+    """
+    Initialize all Phase 8 enterprise features
+    
+    Args:
+        observability_config: ObservabilityConfig for monitoring
+        security_config: SecurityConfig for security features  
+        auth_config: AuthConfig for authentication
+        accessibility_config: AccessibilityConfig for i18n/a11y
+        orchestration_config: Dict for orchestration settings
+    
+    Returns:
+        Dict with initialization status of each component
+    """
+    status = {}
+    
+    # Initialize observability
+    if HAS_OBSERVABILITY_MODULE:
+        try:
+            from observability import ObservabilityConfig
+            config = observability_config or ObservabilityConfig()
+            obs_manager = initialize_observability(config)
+            status['observability'] = 'initialized'
+            logger.info("Observability features initialized")
+        except Exception as e:
+            status['observability'] = f'failed: {e}'
+            logger.error(f"Observability initialization failed: {e}")
+    else:
+        status['observability'] = 'not_available'
+    
+    # Initialize security
+    if HAS_SECURITY_MODULE:
+        try:
+            from security import SecurityConfig
+            config = security_config or SecurityConfig()
+            sec_manager = initialize_security(config)
+            status['security'] = 'initialized'
+            logger.info("Security features initialized")
+        except Exception as e:
+            status['security'] = f'failed: {e}'
+            logger.error(f"Security initialization failed: {e}")
+    else:
+        status['security'] = 'not_available'
+    
+    # Initialize authentication
+    if HAS_AUTH_MODULE:
+        try:
+            from auth import AuthConfig
+            config = auth_config or AuthConfig()
+            auth_manager = initialize_auth(config)
+            status['authentication'] = 'initialized'
+            logger.info("Authentication features initialized")
+        except Exception as e:
+            status['authentication'] = f'failed: {e}'
+            logger.error(f"Authentication initialization failed: {e}")
+    else:
+        status['authentication'] = 'not_available'
+    
+    # Initialize accessibility
+    if HAS_ACCESSIBILITY_MODULE:
+        try:
+            from accessibility import AccessibilityConfig
+            config = accessibility_config or AccessibilityConfig()
+            acc_manager = initialize_accessibility(config)
+            status['accessibility'] = 'initialized'
+            logger.info("Accessibility features initialized")
+        except Exception as e:
+            status['accessibility'] = f'failed: {e}'
+            logger.error(f"Accessibility initialization failed: {e}")
+    else:
+        status['accessibility'] = 'not_available'
+    
+    # Initialize orchestration
+    if HAS_ORCHESTRATION_MODULE:
+        try:
+            config = orchestration_config or {}
+            orch_manager = initialize_orchestration(config)
+            status['orchestration'] = 'initialized'
+            logger.info("Orchestration features initialized")
+        except Exception as e:
+            status['orchestration'] = f'failed: {e}'
+            logger.error(f"Orchestration initialization failed: {e}")
+    else:
+        status['orchestration'] = 'not_available'
+    
+    # Initialize performance profiling
+    if HAS_PERFORMANCE_MODULE:
+        try:
+            global_profiler.enabled = True
+            status['performance'] = 'initialized'
+            logger.info("Performance profiling initialized")
+        except Exception as e:
+            status['performance'] = f'failed: {e}'
+            logger.error(f"Performance initialization failed: {e}")
+    else:
+        status['performance'] = 'not_available'
+    
+    return status
+
+def get_enterprise_status():
+    """Get status of all enterprise features"""
+    return {
+        'version': __version__,
+        'modules': {
+            'performance': HAS_PERFORMANCE_MODULE,
+            'observability': HAS_OBSERVABILITY_MODULE, 
+            'security': HAS_SECURITY_MODULE,
+            'data_connectors': HAS_DATA_CONNECTORS_MODULE,
+            'authentication': HAS_AUTH_MODULE,
+            'orchestration': HAS_ORCHESTRATION_MODULE,
+            'accessibility': HAS_ACCESSIBILITY_MODULE
+        },
+        'managers': {
+            'observability': get_observability() is not None,
+            'security': get_security() is not None,
+            'auth': get_auth() is not None if HAS_AUTH_MODULE else False,
+            'orchestration': get_orchestration() is not None,
+            'accessibility': get_accessibility() is not None
+        }
+    }
+
+__version__ = "0.6.0"
 __author__ = "PyMeta-CBAMM Development Team"
 __email__ = "pymeta-cbamm@example.com"
-__description__ = "Unified meta-analysis suite combining PyMeta v2.1 and CBAMM v5.7 - Phase 4: Production-grade extensions"
+__description__ = "Comprehensive meta-analysis platform with enterprise-grade features - Phase 8: GA Release"
 __license__ = "MIT"
 
 # Export main classes and functions
@@ -5929,11 +6149,25 @@ __all__ = [
     'NetworkMetaRankings',
     'EnhancedTrialSequentialAnalysis',
     'EnhancedGRADE',
-    'PerformanceOptimization',
     'SparseEventMethods',
-    'MetaCLI',
     'AdvancedMultivariateStructures',
     'quick_meta',
     'meta_from_summary_stats',
-    'run_unified_demo'
+    'run_unified_demo',
+    
+    # Phase 8 Enterprise Features
+    'initialize_enterprise_features',
+    'get_enterprise_status',
+    
+    # CLI and automation
+    'MetaCLI',
+    
+    # Results classes
+    'FixedEffectsResults',
+    'RandomEffectsResults', 
+    'HeterogeneityResults',
+    'PredictionIntervalResults',
+    'BiasTestResults',
+    'ConflictResults',
+    'MetaAnalysisResults'
 ]
