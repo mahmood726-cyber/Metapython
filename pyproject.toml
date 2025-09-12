@@ -1,0 +1,185 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metapython"
+version = "0.6.0rc1"
+description = "Unified meta-analysis suite combining PyMeta and CBAMM with production-grade extensions"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "PyMeta-CBAMM Development Team", email = "pymeta-cbamm@example.com"}
+]
+maintainers = [
+    {name = "PyMeta-CBAMM Development Team", email = "pymeta-cbamm@example.com"}
+]
+keywords = ["meta-analysis", "statistics", "research", "evidence-synthesis", "systematic-review"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "matplotlib>=3.4.0",
+    "seaborn>=0.11.0",
+    "scipy>=1.7.0",
+]
+
+[project.optional-dependencies]
+# Statistical analysis extras
+stats = [
+    "statsmodels>=0.13.0",
+    "scikit-learn>=1.0.0",
+]
+
+# Bayesian analysis extras
+bayesian = [
+    "pymc>=5.0.0",
+    "arviz>=0.12.0",
+]
+
+# Pipeline and automation extras
+pipeline = [
+    "PyYAML>=6.0",
+    "Jinja2>=3.0.0",
+    "click>=8.0.0",
+]
+
+# Performance extras
+performance = [
+    "numba>=0.56.0",
+    "dask[complete]>=2022.1.0",
+    "joblib>=1.1.0",
+]
+
+# Living meta-analysis extras
+living = [
+    "biopython>=1.79",
+    "requests>=2.25.0",
+]
+
+# Web and visualization extras
+web = [
+    "streamlit>=1.10.0",
+    "flask>=2.0.0",
+    "plotly>=5.0.0",
+]
+
+# NLP and ML extras
+ml = [
+    "spacy>=3.4.0",
+    "transformers>=4.15.0",
+    "xgboost>=1.5.0",
+    "shap>=0.40.0",
+]
+
+# Optimization extras
+optimization = [
+    "cvxpy>=1.2.0",
+]
+
+# Development extras
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "hypothesis>=6.50.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+    "pre-commit>=2.20.0",
+]
+
+# Documentation extras
+docs = [
+    "sphinx>=4.5.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "nbsphinx>=0.8.8",
+    "jupyter>=1.0.0",
+    "myst-parser>=0.18.0",
+]
+
+# All extras combined
+all = [
+    "metapython[stats,bayesian,pipeline,performance,living,web,ml,optimization]",
+]
+
+# Complete development environment
+full = [
+    "metapython[all,dev,docs]",
+]
+
+[project.urls]
+Homepage = "https://github.com/mahmood726-cyber/Metapython"
+Documentation = "https://metapython.readthedocs.io"
+Repository = "https://github.com/mahmood726-cyber/Metapython"
+"Bug Tracker" = "https://github.com/mahmood726-cyber/Metapython/issues"
+Changelog = "https://github.com/mahmood726-cyber/Metapython/blob/main/CHANGELOG.md"
+
+[project.scripts]
+metapython = "metapython:main"
+meta = "metapython:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["metapython*"]
+
+[tool.setuptools.package-data]
+metapython = ["*.yaml", "*.yml", "data/*.csv", "templates/*.html"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers --cov=metapython"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["metapython"]
+omit = ["tests/*", "setup.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

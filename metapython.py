@@ -5909,10 +5909,10 @@ class AdvancedMultivariateStructures:
 # VERSION INFORMATION
 # ===================================================================
 
-__version__ = "0.4.0"
+__version__ = "0.6.0rc1"
 __author__ = "PyMeta-CBAMM Development Team"
 __email__ = "pymeta-cbamm@example.com"
-__description__ = "Unified meta-analysis suite combining PyMeta v2.1 and CBAMM v5.7 - Phase 4: Production-grade extensions"
+__description__ = "Unified meta-analysis suite combining PyMeta v2.1 and CBAMM v5.7 - Phase 7: Production hardening and v0.6.0 release candidate"
 __license__ = "MIT"
 
 # Export main classes and functions
@@ -5937,3 +5937,139 @@ __all__ = [
     'meta_from_summary_stats',
     'run_unified_demo'
 ]
+
+# ===================================================================
+# CLI ENTRY POINT
+# ===================================================================
+
+def main():
+    """Main CLI entry point for MetaPython"""
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="MetaPython - Unified Meta-Analysis Suite v0.6.0-rc.1",
+        epilog="For more information, visit: https://github.com/mahmood726-cyber/Metapython"
+    )
+    
+    parser.add_argument(
+        "--version", 
+        action="version", 
+        version=f"MetaPython {__version__}"
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Demo command
+    demo_parser = subparsers.add_parser("demo", help="Run demonstration analysis")
+    demo_parser.add_argument("--studies", type=int, default=25, help="Number of studies to simulate")
+    demo_parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    demo_parser.add_argument("--output-dir", default=".", help="Output directory")
+    demo_parser.add_argument("--no-visuals", action="store_true", help="Skip visual outputs")
+    demo_parser.add_argument("--no-report", action="store_true", help="Skip text report")
+    
+    # Pipeline command
+    pipeline_parser = subparsers.add_parser("pipeline", help="Run analysis pipeline from YAML")
+    pipeline_parser.add_argument("config", help="YAML configuration file")
+    pipeline_parser.add_argument("--output-dir", default="meta_output", help="Output directory")
+    
+    # Quick analysis command
+    quick_parser = subparsers.add_parser("quick", help="Quick meta-analysis from CSV")
+    quick_parser.add_argument("data", help="CSV data file")
+    quick_parser.add_argument("--effect-col", default="effect", help="Effect size column")
+    quick_parser.add_argument("--se-col", default="se", help="Standard error column") 
+    quick_parser.add_argument("--label-col", default="study", help="Study label column")
+    quick_parser.add_argument("--output-dir", default=".", help="Output directory")
+    
+    # Report command  
+    report_parser = subparsers.add_parser("report", help="Generate report from previous analysis")
+    report_parser.add_argument("--notebook", help="Run Jupyter notebook")
+    
+    args = parser.parse_args()
+    
+    if args.command == "demo":
+        print("Running MetaPython demonstration...")
+        try:
+            meta = run_unified_demo(
+                n_studies=args.studies,
+                seed=args.seed,
+                output_dir=args.output_dir,
+                save_visuals=not args.no_visuals,
+                save_text_report=not args.no_report
+            )
+            print(f"✓ Demo completed successfully!")
+            print(f"  - Studies analyzed: {len(meta.df)}")
+            print(f"  - Output directory: {args.output_dir}")
+            return 0
+        except Exception as e:
+            print(f"✗ Demo failed: {e}")
+            return 1
+            
+    elif args.command == "pipeline":
+        print(f"Running pipeline from {args.config}...")
+        try:
+            cli = MetaCLI()
+            cli.output_dir = args.output_dir
+            result = cli.run_pipeline(args.config)
+            if result['success']:
+                print(f"✓ Pipeline completed successfully!")
+                print(f"  - Output directory: {args.output_dir}")
+                return 0
+            else:
+                print(f"✗ Pipeline failed: {result.get('error', 'Unknown error')}")
+                return 1
+        except Exception as e:
+            print(f"✗ Pipeline failed: {e}")
+            return 1
+            
+    elif args.command == "quick":
+        print(f"Running quick analysis on {args.data}...")
+        try:
+            # Load data
+            if args.data.endswith('.csv'):
+                data = pd.read_csv(args.data)
+            else:
+                print(f"✗ Unsupported file format. Please use CSV.")
+                return 1
+                
+            # Run analysis
+            meta = UnifiedMetaAnalysis(
+                data=data,
+                effect_col=args.effect_col,
+                se_col=args.se_col,
+                label_col=args.label_col
+            ).analyze()
+            
+            # Save outputs
+            ensure_dir(args.output_dir)
+            save_report(meta, args.output_dir)
+            
+            print(f"✓ Quick analysis completed!")
+            print(f"  - Studies analyzed: {len(meta.df)}")
+            print(f"  - Output directory: {args.output_dir}")
+            return 0
+        except Exception as e:
+            print(f"✗ Quick analysis failed: {e}")
+            return 1
+            
+    elif args.command == "report":
+        if args.notebook:
+            print(f"Running notebook: {args.notebook}")
+            try:
+                import subprocess
+                result = subprocess.run(["jupyter", "notebook", args.notebook], check=True)
+                return 0
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"✗ Failed to run notebook: {e}")
+                return 1
+        else:
+            print("Please specify --notebook option")
+            return 1
+    else:
+        parser.print_help()
+        return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

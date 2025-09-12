@@ -48,3 +48,26 @@ venv.bak/
 *.txt
 *.pdf
 *.svg
+
+# Documentation build
+docs/_build/
+docs/build/
+site/
+
+# Examples output
+examples/outputs/
+examples/**/*.png
+examples/**/*.txt
+examples/**/*.pdf
+
+# Testing
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Distribution specific
+*.wheel
+.eggs/
+*.egg-info/
+wheelhouse/
