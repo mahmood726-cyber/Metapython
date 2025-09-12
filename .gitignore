@@ -48,3 +48,38 @@ venv.bak/
 *.txt
 *.pdf
 *.svg
+
+# Phase 13 Enterprise additions
+# Observability and monitoring
+prometheus_data/
+grafana_data/
+jaeger_data/
+
+# Caching and temporary files
+/tmp/metapython_cache/
+/tmp/metapython_exports/
+/tmp/metapython_r/
+metapython_outputs/
+phase13_outputs/
+
+# Security and secrets
+*.key
+*.pem
+*.p12
+secrets.json
+.env.local
+.env.production
+
+# BI exports
+*.parquet
+*.xlsx
+*.hyper
+
+# R bridge artifacts
+metapython_r_bridge.R
+.Rhistory
+.RData
+
+# Data lineage artifacts
+lineage_events/
+openlineage_logs/
