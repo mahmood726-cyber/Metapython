@@ -2212,10 +2212,17 @@ class UnifiedMetaAnalysis:
             bias = self.results.bias_assessment
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
-                    ax.axvline(pet_peese['corrected_effect'], color='green', 
+                # Check if PET-PEESE is available and successful
+                if pet_peese.get('available', True) and pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
+                    corrected_effect = pet_peese['corrected_effect']
+                    ax.axvline(corrected_effect, color='green', 
                              linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                             label=f'PET-PEESE = {corrected_effect:.3f}')
+                elif pet_peese.get('available', True) and pet_peese.get('success', True):
+                    # PET-PEESE analysis succeeded but corrected_effect missing
+                    print("Warning: PET-PEESE analysis completed but corrected effect unavailable for visualization")
+                elif not pet_peese.get('available', True):
+                    print("Note: PET-PEESE analysis unavailable - bias correction not shown in plot")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2487,8 +2494,15 @@ class UnifiedMetaAnalysis:
             
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                # Check if PET-PEESE is available and successful
+                if pet_peese.get('available', True) and pet_peese.get('success', True):
+                    corrected_effect = pet_peese.get('corrected_effect')
+                    if corrected_effect is not None:
+                        report.append(f"PET-PEESE corrected: {corrected_effect:.3f}")
+                    else:
+                        report.append("PET-PEESE corrected: N/A (analysis succeeded but corrected effect unavailable)")
+                elif not pet_peese.get('available', True):
+                    report.append("PET-PEESE corrected: N/A (analysis unavailable)")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2511,7 +2525,7 @@ class UnifiedMetaAnalysis:
             report.append("")
         
         # Subgroups
-        if hasattr(self.results, 'subgroups'):
+        if hasattr(self.results, 'subgroups') and self.results.subgroups is not None:
             report.append("SUBGROUP ANALYSIS")
             report.append("-" * 16)
             
