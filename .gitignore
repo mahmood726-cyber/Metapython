@@ -48,3 +48,6 @@ venv.bak/
 *.txt
 *.pdf
 *.svg
+
+# Test files
+test_minimal_env.py
