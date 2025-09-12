@@ -18,6 +18,10 @@ Phase 4 Extensions:
 - CLI and pipeline automation (meta_cli, meta_pipeline.yaml)
 - Performance optimizations (Numba hot paths, memory-efficient iterators)
 
+Note: In minimal Codespaces/containerized environments, advanced features will 
+degrade gracefully without crashing. Bayesian methods require PyTensor compilation
+to be disabled via environment flags for stability.
+
 Author: PyMeta-CBAMM Development Team
 License: MIT
 Version: 0.4.0
