@@ -5947,12 +5947,12 @@ class ConfigSchemaValidator:
                         },
                         "use_hksj": {
                             "type": "boolean",
-                            "default": false,
+                            "default": False,
                             "description": "Use Hartung-Knapp-Sidik-Jonkman adjustment"
                         },
                         "include_bias_tests": {
                             "type": "boolean", 
-                            "default": true,
+                            "default": True,
                             "description": "Include publication bias tests"
                         },
                         "confidence_level": {
@@ -5963,24 +5963,24 @@ class ConfigSchemaValidator:
                             "description": "Confidence level for intervals"
                         }
                     },
-                    "additionalProperties": false
+                    "additionalProperties": False
                 },
                 "output_options": {
                     "type": "object",
                     "properties": {
                         "save_plots": {
                             "type": "boolean",
-                            "default": true,
+                            "default": True,
                             "description": "Save visualization plots"
                         },
                         "save_data": {
                             "type": "boolean",
-                            "default": true,
+                            "default": True,
                             "description": "Save processed data"
                         },
                         "save_html": {
                             "type": "boolean",
-                            "default": false,
+                            "default": False,
                             "description": "Generate HTML report"
                         },
                         "output_dir": {
@@ -5989,7 +5989,7 @@ class ConfigSchemaValidator:
                             "description": "Output directory path"
                         }
                     },
-                    "additionalProperties": false
+                    "additionalProperties": False
                 },
                 "extras": {
                     "type": "object",
@@ -6008,11 +6008,11 @@ class ConfigSchemaValidator:
                             "description": "Federated analysis settings"
                         }
                     },
-                    "additionalProperties": true
+                    "additionalProperties": True
                 }
             },
             "required": ["data_file"],
-            "additionalProperties": false
+            "additionalProperties": False
         }
     
     @staticmethod
