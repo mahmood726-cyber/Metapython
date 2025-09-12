@@ -1,0 +1,76 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+- family-names: "Mahmood"
+  given-names: "Cyber"
+  orcid: "https://orcid.org/0000-0000-0000-0000"
+- name: "Metapython Development Team"
+title: "Metapython: Comprehensive Meta-Analysis Platform"
+version: 0.7.0
+doi: 10.5281/zenodo.XXXXXXX
+date-released: 2024-12-12
+url: "https://github.com/mahmood726-cyber/Metapython"
+repository-code: "https://github.com/mahmood726-cyber/Metapython"
+license: MIT
+keywords:
+  - meta-analysis
+  - statistics
+  - research
+  - evidence synthesis
+  - bayesian
+  - network meta-analysis
+  - reproducibility
+  - python
+abstract: >-
+  Metapython is a comprehensive, production-ready meta-analysis platform
+  that combines advanced statistical methods with modern software engineering
+  practices. It provides researchers with tools for conducting rigorous
+  meta-analyses, from basic fixed and random effects models to advanced
+  Bayesian hierarchical models and network meta-analysis. The platform
+  emphasizes reproducibility, extensibility through a plugin system, and
+  integration with modern data infrastructure. Metapython supports the
+  complete meta-analysis workflow including data import, effect size
+  calculation, heterogeneity assessment, publication bias detection,
+  sensitivity analysis, and comprehensive reporting.
+references:
+  - type: article
+    authors:
+    - family-names: "DerSimonian"
+      given-names: "Rebecca"
+    - family-names: "Laird"
+      given-names: "Nan"
+    title: "Meta-analysis in clinical trials"
+    journal: "Controlled Clinical Trials"
+    volume: 7
+    issue: 3
+    year: 1986
+    pages: "177-188"
+    doi: "10.1016/0197-2456(86)90046-2"
+  - type: article
+    authors:
+    - family-names: "Higgins"
+      given-names: "Julian P. T."
+    - family-names: "Thompson"
+      given-names: "Simon G."
+    title: "Quantifying heterogeneity in a meta‐analysis"
+    journal: "Statistics in Medicine"
+    volume: 21
+    issue: 11
+    year: 2002
+    pages: "1539-1558"
+    doi: "10.1002/sim.1186"
+  - type: book
+    authors:
+    - family-names: "Borenstein"
+      given-names: "Michael"
+    - family-names: "Hedges"
+      given-names: "Larry V."
+    - family-names: "Higgins"
+      given-names: "Julian P. T."
+    - family-names: "Rothstein"
+      given-names: "Hannah R."
+    title: "Introduction to Meta-Analysis"
+    publisher: "John Wiley & Sons"
+    year: 2009
+    isbn: "978-0-470-05724-7"

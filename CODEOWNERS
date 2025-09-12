@@ -1,0 +1,140 @@
+# Code Ownership and Review Guidelines
+
+This file defines code ownership and review responsibilities for different areas of the Metapython project.
+
+## Core Team
+
+- @mahmood726-cyber - Project lead, overall architecture
+- @core-team-member-1 - Advanced methods, Bayesian analysis
+- @core-team-member-2 - Plugin system, integrations
+
+## Area Ownership
+
+### Core Meta-Analysis (`metapython.py`, `metapython/core/`)
+- **Primary:** @mahmood726-cyber
+- **Secondary:** @core-team-member-1
+- **Expertise:** Core meta-analysis algorithms, effect size calculations
+
+### Plugin System (`metapython/plugins/`)
+- **Primary:** @core-team-member-2
+- **Secondary:** @mahmood726-cyber
+- **Expertise:** Plugin architecture, security, discovery
+
+### Advanced Methods (`metapython/advanced/`)
+- **Primary:** @core-team-member-1
+- **Secondary:** @core-team-member-2
+- **Expertise:** Bayesian methods, network meta-analysis, advanced statistics
+
+### Benchmarking (`metapython/benchmarks/`)
+- **Primary:** @core-team-member-2
+- **Secondary:** @mahmood726-cyber
+- **Expertise:** Performance testing, CI/CD, regression detection
+
+### Data Integrations (`metapython/integrations/`)
+- **Primary:** @core-team-member-2
+- **Secondary:** @core-team-member-1
+- **Expertise:** Cloud platforms, data streaming, connectors
+
+### Reproducibility (`metapython/reproducibility/`)
+- **Primary:** @core-team-member-1
+- **Secondary:** @mahmood726-cyber
+- **Expertise:** Provenance tracking, environment management
+
+### Documentation (`docs/`)
+- **Primary:** @mahmood726-cyber
+- **Secondary:** @core-team-member-1, @core-team-member-2
+- **Expertise:** User guides, API documentation, tutorials
+
+### Tests (`tests/`, `*_test.py`)
+- **Primary:** All core team members
+- **Requirements:** All changes require tests
+
+### Examples (`examples/`)
+- **Primary:** @mahmood726-cyber
+- **Secondary:** @core-team-member-1
+- **Expertise:** User-facing examples, tutorials
+
+### CI/CD (`.github/`, `*.yml`)
+- **Primary:** @core-team-member-2
+- **Secondary:** @mahmood726-cyber
+- **Expertise:** GitHub Actions, automation, releases
+
+## Review Requirements
+
+### Standard Changes
+- **Requirement:** 1 approval from area owner
+- **Examples:** Bug fixes, minor features, documentation updates
+
+### Major Changes
+- **Requirement:** 2 approvals, including area owner
+- **Examples:** API changes, new major features, performance improvements
+
+### Breaking Changes
+- **Requirement:** All core team members must approve
+- **Additional:** RFC required for significant breaking changes
+- **Examples:** API removals, major architectural changes
+
+### Security-Related Changes
+- **Requirement:** Security review by @core-team-member-2
+- **Additional:** Thorough testing required
+- **Examples:** Plugin security, authentication, data validation
+
+## Review Guidelines
+
+### For Reviewers
+
+1. **Functionality**: Does the code do what it's supposed to do?
+2. **Testing**: Are there appropriate tests for the changes?
+3. **Documentation**: Are docs updated if needed?
+4. **Performance**: Are there any performance implications?
+5. **Security**: Are there any security concerns?
+6. **Style**: Does the code follow project conventions?
+7. **Breaking Changes**: Are breaking changes justified and documented?
+
+### For Authors
+
+1. **Self-Review**: Review your own PR before requesting review
+2. **Tests**: Include tests for new functionality
+3. **Documentation**: Update docs for user-facing changes
+4. **Performance**: Consider performance implications
+5. **Backwards Compatibility**: Avoid breaking changes when possible
+6. **Small PRs**: Keep PRs focused and reasonably sized
+
+## Special Cases
+
+### Emergency Fixes
+- **Process:** Can be merged with single approval for critical security or data loss issues
+- **Follow-up:** Post-merge review and discussion required
+
+### Automated Updates
+- **Process:** Dependency updates by bots can be auto-merged if tests pass
+- **Exceptions:** Major version updates require manual review
+
+### External Contributions
+- **Process:** Require approval from area owner plus one other core team member
+- **Additional:** Welcome new contributors and provide mentoring
+
+## Escalation
+
+If there are disagreements during review:
+
+1. **Discussion**: Try to resolve through PR comments
+2. **Synchronous Chat**: Move to real-time discussion if needed
+3. **Team Meeting**: Escalate to core team meeting for major disagreements
+4. **Project Lead**: Final decision by project lead if consensus cannot be reached
+
+## Adding New Owners
+
+New code owners can be added by:
+
+1. **Proposal**: Current owner proposes new owner
+2. **Discussion**: Core team discusses the proposal
+3. **Approval**: Majority approval from core team
+4. **Update**: Update this CODEOWNERS file
+
+## Tools
+
+- **Branch Protection**: Main branch requires PR reviews
+- **Status Checks**: All CI checks must pass
+- **Draft PRs**: Use for work-in-progress
+- **Labels**: Use appropriate labels for categorization

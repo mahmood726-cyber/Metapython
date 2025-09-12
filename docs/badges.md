@@ -1,0 +1,7 @@
+[![Tests](https://github.com/mahmood726-cyber/Metapython/workflows/Tests/badge.svg)](https://github.com/mahmood726-cyber/Metapython/actions)
+[![Benchmarks](https://github.com/mahmood726-cyber/Metapython/workflows/Benchmarks/badge.svg)](https://github.com/mahmood726-cyber/Metapython/actions)
+[![Documentation](https://readthedocs.org/projects/metapython/badge/?version=latest)](https://metapython.readthedocs.io/)
+[![PyPI version](https://badge.fury.io/py/metapython.svg)](https://pypi.org/project/metapython/)
+[![Python versions](https://img.shields.io/pypi/pyversions/metapython.svg)](https://pypi.org/project/metapython/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
