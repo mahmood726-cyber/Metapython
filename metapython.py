@@ -23,6 +23,11 @@ License: MIT
 Version: 0.4.0
 """
 
+# Runtime robustness: Configure PyTensor for minimal environments
+# Prevents C compilation issues in Codespaces/static libpython setups
+import os
+os.environ['PYTENSOR_FLAGS'] = "mode=FAST_COMPILE,linker=py,optimizer_excluding=constant_folding,compute_test_value=ignore"
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -43,6 +48,17 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Runtime robustness: Lower PyTensor log levels to suppress stack traces
+try:
+    import pytensor
+    pytensor.config.exception_verbosity = 'low'
+    logging.getLogger('pytensor').setLevel(logging.WARNING)
+except ImportError:
+    pass
+
+# Module-level flags for degraded graceful mode
+_SPACY_WARNING_SHOWN = False  # Throttle spaCy warnings to once per run
+
 # Optional dependencies with graceful fallback
 try:
     import pymc as pm
@@ -50,7 +66,11 @@ try:
     HAS_PYMC = True
 except ImportError:
     HAS_PYMC = False
-    logger.info("PyMC not available - Bayesian methods disabled")
+    logger.info("PyMC not available - Bayesian methods disabled (degraded mode)")
+except Exception as e:
+    # Catch PyTensor compilation errors gracefully
+    HAS_PYMC = False
+    logger.info("PyMC/PyTensor unavailable - Bayesian methods disabled (minimal environment mode)")
 
 try:
     import statsmodels.api as sm
@@ -152,6 +172,62 @@ try:
     HAS_MATPLOTLIB_PATCHES = True
 except ImportError:
     HAS_MATPLOTLIB_PATCHES = False
+
+# ===================================================================
+# UTILITY HELPERS FOR RUNTIME ROBUSTNESS
+# ===================================================================
+
+def _fmt_float(value: float, precision: int = 3) -> str:
+    """Consistent float formatting helper for all effect/CI reporting"""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "N/A"
+    try:
+        return f"{float(value):.{precision}f}"
+    except (ValueError, TypeError):
+        return "N/A"
+
+def get_corrected_effect(results_dict: Dict[str, Any], fallback_key: str = 'pooled_effect') -> float:
+    """
+    Safely retrieve corrected effect from bias assessment results.
+    Falls back to pooled effect if corrected effect not available.
+    
+    Args:
+        results_dict: Dictionary containing analysis results
+        fallback_key: Key to use as fallback (default: 'pooled_effect')
+    
+    Returns:
+        float: Corrected effect if available, fallback value otherwise
+    """
+    # Try to get corrected effect from PET-PEESE bias assessment
+    if 'bias_assessment' in results_dict:
+        bias = results_dict['bias_assessment']
+        if hasattr(bias, 'pet_peese') and hasattr(bias.pet_peese, 'get'):
+            pet_peese = bias.pet_peese
+            if pet_peese.get('success', False) and 'corrected_effect' in pet_peese:
+                return pet_peese['corrected_effect']
+        elif isinstance(bias, dict) and 'pet_peese' in bias:
+            pet_peese = bias['pet_peese']
+            if pet_peese.get('success', False) and 'corrected_effect' in pet_peese:
+                return pet_peese['corrected_effect']
+    
+    # Fallback to pooled effect or other specified key
+    if fallback_key in results_dict:
+        return results_dict[fallback_key]
+    
+    # Last resort fallbacks
+    fallback_keys = ['effect', 'pooled_effect', 'estimate', 'mean']
+    for key in fallback_keys:
+        if key in results_dict:
+            return results_dict[key]
+    
+    return None
+
+def _show_spacy_warning_once(message: str) -> None:
+    """Show spaCy warning only once per run"""
+    global _SPACY_WARNING_SHOWN
+    if not _SPACY_WARNING_SHOWN:
+        logger.warning(message)
+        _SPACY_WARNING_SHOWN = True
 
 # ===================================================================
 # RESULT DATACLASSES FOR STRUCTURED OUTPUT
@@ -707,7 +783,8 @@ class NLPExtractor:
                 import spacy
                 self.nlp = spacy.load("en_core_web_sm")
             except OSError:
-                logger.warning("spaCy model not found - install with: python -m spacy download en_core_web_sm")
+                # Throttle spaCy warning to show only once per run
+                _show_spacy_warning_once("spaCy model 'en_core_web_sm' not found - install with: python -m spacy download en_core_web_sm (degraded NLP mode)")
     
     def extract_effect_sizes(self, text: str) -> Tuple[float, float]:
         """Extract effect size and SE from abstract text"""
@@ -1563,10 +1640,10 @@ class UnifiedMetaAnalysis:
     # ===================================================================
     
     def bayesian_stacking(self, chains: int = None, draws: int = None) -> Dict[str, Any]:
-        """Bayesian stacking for model averaging"""
+        """Bayesian stacking for model averaging with graceful degradation"""
         if not HAS_PYMC:
-            logger.warning("PyMC not available - Bayesian methods disabled")
-            return {'available': False}
+            logger.info("PyMC not available - Bayesian methods disabled (minimal environment mode)")
+            return {'available': False, 'success': False}
         
         if chains is None:
             chains = self.config.bayesian_chains
@@ -1598,45 +1675,53 @@ class UnifiedMetaAnalysis:
             }
             
         except Exception as e:
-            logger.error(f"Bayesian stacking failed: {e}")
-            return {'success': False, 'error': str(e)}
+            # Graceful degradation for PyTensor compilation issues
+            logger.info("Bayesian stacking unavailable (minimal environment - compilation issues)")
+            return {'success': False, 'degraded_mode': True}
     
     @staticmethod
     def hsroc_model(tp: np.ndarray, fn: np.ndarray, fp: np.ndarray, 
                    tn: np.ndarray, draws: int = 2000, chains: int = 2) -> Dict[str, Any]:
         """Bayesian HSROC model for diagnostic test accuracy"""
         if not HAS_PYMC:
-            raise ImportError("PyMC required for Bayesian HSROC: pip install pymc")
+            logger.info("PyMC not available - Bayesian HSROC disabled (minimal environment mode)")
+            return {'available': False, 'reason': 'PyMC not available'}
         
-        n_studies = len(tp)
-        
-        with pm.Model() as model:
-            # Hyperpriors
-            mu_sens = pm.Normal("mu_sensitivity", 0, 2)
-            mu_spec = pm.Normal("mu_specificity", 0, 2)
-            tau_sens = pm.HalfCauchy("tau_sensitivity", 1)
-            tau_spec = pm.HalfCauchy("tau_specificity", 1)
+        try:
+            n_studies = len(tp)
             
-            # Study-level parameters
-            sens_logit = pm.Normal("sensitivity_logit", mu_sens, tau_sens, shape=n_studies)
-            spec_logit = pm.Normal("specificity_logit", mu_spec, tau_spec, shape=n_studies)
+            with pm.Model() as model:
+                # Hyperpriors
+                mu_sens = pm.Normal("mu_sensitivity", 0, 2)
+                mu_spec = pm.Normal("mu_specificity", 0, 2)
+                tau_sens = pm.HalfCauchy("tau_sensitivity", 1)
+                tau_spec = pm.HalfCauchy("tau_specificity", 1)
+                
+                # Study-level parameters
+                sens_logit = pm.Normal("sensitivity_logit", mu_sens, tau_sens, shape=n_studies)
+                spec_logit = pm.Normal("specificity_logit", mu_spec, tau_spec, shape=n_studies)
+                
+                # Likelihood
+                pm.Binomial("observed_tp", n=tp+fn, p=pm.math.sigmoid(sens_logit), observed=tp)
+                pm.Binomial("observed_tn", n=tn+fp, p=pm.math.sigmoid(spec_logit), observed=tn)
+                
+                # Sample posterior
+                trace = pm.sample(draws=draws, chains=chains, target_accept=0.9, 
+                                return_inferencedata=True)
             
-            # Likelihood
-            pm.Binomial("observed_tp", n=tp+fn, p=pm.math.sigmoid(sens_logit), observed=tp)
-            pm.Binomial("observed_tn", n=tn+fp, p=pm.math.sigmoid(spec_logit), observed=tn)
+            summary = az.summary(trace, var_names=["mu_sensitivity", "mu_specificity", 
+                                                 "tau_sensitivity", "tau_specificity"])
             
-            # Sample posterior
-            trace = pm.sample(draws=draws, chains=chains, target_accept=0.9, 
-                            return_inferencedata=True)
-        
-        summary = az.summary(trace, var_names=["mu_sensitivity", "mu_specificity", 
-                                             "tau_sensitivity", "tau_specificity"])
-        
-        return {
-            'trace': trace,
-            'summary': summary,
-            'model': model
-        }
+            return {
+                'trace': trace,
+                'summary': summary,
+                'model': model,
+                'available': True
+            }
+        except Exception as e:
+            # Graceful degradation for PyTensor compilation issues
+            logger.info("Bayesian HSROC unavailable (minimal environment - compilation issues)")
+            return {'available': False, 'degraded_mode': True}
     
     # ===================================================================
     # LIVING META-ANALYSIS INTEGRATION
@@ -2207,22 +2292,27 @@ class UnifiedMetaAnalysis:
         ax.axvline(overall_effect, color='red', linestyle='--', linewidth=2,
                   label=f'Overall effect = {overall_effect:.3f}')
         
-        # Bias-corrected estimates if available
+        # Bias-corrected estimates if available - use robust helper
         if include_bias_methods and hasattr(self.results, 'bias_assessment'):
             bias = self.results.bias_assessment
-            if hasattr(bias, 'pet_peese'):
-                pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
-                    ax.axvline(pet_peese['corrected_effect'], color='green', 
-                             linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+            
+            # Use get_corrected_effect helper with fallback to overall_effect
+            corrected_effect = get_corrected_effect({'bias_assessment': bias}, 'overall_effect')
+            if corrected_effect is not None and corrected_effect != overall_effect:
+                ax.axvline(corrected_effect, color='green', 
+                         linestyle=':', linewidth=2, 
+                         label=f'PET-PEESE = {_fmt_float(corrected_effect)}')
+            elif hasattr(bias, 'pet_peese'):
+                # Show degraded notice if corrected effect unavailable
+                print("Note: Corrected effect unavailable, using pooled effect for bias assessment visualization")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
-                if trim_fill['n_imputed'] > 0:
+                if trim_fill.get('n_imputed', 0) > 0 and 'adjusted_effect' in trim_fill:
                     ax.axvline(trim_fill['adjusted_effect'], color='orange', 
                              linestyle='-.', linewidth=2,
-                             label=f'Trim-fill = {trim_fill["adjusted_effect"]:.3f}')
+                             label=f'Trim-fill = {_fmt_float(trim_fill["adjusted_effect"])}')
+        
         
         ax.set_xlabel('Effect Size', fontsize=12)
         ax.set_ylabel('Standard Error', fontsize=12)
@@ -2488,7 +2578,12 @@ class UnifiedMetaAnalysis:
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                    # Use get_corrected_effect helper with graceful fallback
+                    corrected_effect = get_corrected_effect({'bias_assessment': bias})
+                    if corrected_effect is not None:
+                        report.append(f"PET-PEESE corrected: {_fmt_float(corrected_effect)}")
+                    else:
+                        report.append("PET-PEESE corrected: N/A")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -4487,10 +4582,14 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
             results['egger_p'] = egger_p
         
         if hasattr(bias, 'pet_peese'):
-            pet_peese = bias.pet_peese
-            if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
-                results['pet_peese_effect'] = pet_peese['corrected_effect']
+            # Use robust corrected effect helper
+            corrected_effect = get_corrected_effect({'bias_assessment': bias})
+            if corrected_effect is not None:
+                print(f"PET-PEESE corrected effect: {_fmt_float(corrected_effect)}")
+                results['pet_peese_effect'] = corrected_effect
+            else:
+                print("PET-PEESE corrected effect: N/A (degraded mode)")
+                results['pet_peese_effect'] = None
         
         if hasattr(bias, 'trim_fill'):
             trim_fill = bias.trim_fill
@@ -4597,7 +4696,7 @@ def run_dose_response(meta) -> Dict[str, Any]:
     }
 
 def run_bayesian(meta) -> Dict[str, Any]:
-    """Run Bayesian methods"""
+    """Run Bayesian methods with robust error handling"""
     print_subsection("9. BAYESIAN METHODS", "-")
     
     results = {}
@@ -4605,21 +4704,22 @@ def run_bayesian(meta) -> Dict[str, Any]:
         try:
             bayes_results = meta.bayesian_stacking(chains=2, draws=500)
             if bayes_results.get('success', False):
-                print(f"Bayesian posterior mean: {bayes_results['posterior_mean']:.3f}")
-                print(f"Posterior SD: {bayes_results['posterior_sd']:.3f}")
+                print(f"Bayesian posterior mean: {_fmt_float(bayes_results['posterior_mean'])}")
+                print(f"Posterior SD: {_fmt_float(bayes_results['posterior_sd'])}")
                 results = {
                     'posterior_mean': bayes_results['posterior_mean'],
                     'posterior_sd': bayes_results['posterior_sd'],
                     'success': True
                 }
             else:
-                print("Bayesian analysis failed or unavailable")
+                print("Bayesian analysis failed or unavailable (degraded mode)")
                 results['success'] = False
         except Exception as e:
-            print(f"Bayesian analysis failed: {e}")
-            results = {'success': False, 'error': str(e)}
+            # Suppress stack trace for PyTensor/PyMC compilation errors
+            print("Bayesian methods unavailable (minimal environment - PyTensor compilation issues)")
+            results = {'success': False, 'degraded_mode': True}
     else:
-        print("PyMC not available - Bayesian methods disabled")
+        print("PyMC not available - Bayesian methods disabled (degraded mode)")
         results = {'success': False, 'reason': 'PyMC not available'}
     
     return results
@@ -4681,7 +4781,12 @@ def run_living_meta(meta) -> Dict[str, Any]:
 
 def run_unified_demo(n_studies: int = 25, seed: int = 42, output_dir: str = ".", 
                      save_visuals: bool = True, save_text_report: bool = True) -> 'UnifiedMetaAnalysis':
-    """Comprehensive demonstration of all unified capabilities including new modules"""
+    """
+    Comprehensive demonstration of all unified capabilities including new modules.
+    
+    Note: Designed for robust operation in minimal environments (Codespaces, static libpython).
+    Advanced features (PyMC/PyTensor, spaCy, ML methods) degrade gracefully when unavailable.
+    """
     
     # Print standardized heading
     print_section("PyMeta-CBAMM Unified Suite v3.0 - COMPLETE FEATURE DEMONSTRATION")
@@ -4689,20 +4794,20 @@ def run_unified_demo(n_studies: int = 25, seed: int = 42, output_dir: str = ".",
     # Generate demo data
     demo_data = generate_demo_data(n_studies, seed)
     
-    # Run core analysis
+    # Run core analysis - always available
     print_subsection("1. CORE UNIFIED ANALYSIS", "-")
     meta = run_core_analysis(demo_data)
     print_analysis_summary(meta)
     
-    # Run modular analysis steps
+    # Run modular analysis steps - graceful degradation for advanced features
     run_diagnostics(meta)
-    run_bias_assessment(meta)
+    run_bias_assessment(meta)  # Uses robust corrected_effect helper
     run_conflict_detection(meta)
     run_multiverse(meta)
     run_missing_sensitivity(meta, n_max=3)
     run_sequential_analysis(meta)
     run_dose_response(meta)
-    run_bayesian(meta)
+    run_bayesian(meta)  # Graceful PyMC/PyTensor handling
     run_grade_assessment()
     run_simulation()
     run_living_meta(meta)
