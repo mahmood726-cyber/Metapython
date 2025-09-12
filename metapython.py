@@ -626,39 +626,61 @@ class ConflictDetection:
         """Detect conflicting results using clustering"""
         if not HAS_SKLEARN:
             logger.warning("Scikit-learn not available - conflict detection disabled")
-            return {'k': 1, 'conflicting': False}
+            return {
+                'k': 1, 
+                'conflicting': False,
+                'silhouette': 0.0,
+                'delta': 0.0,
+                'clusters': pd.DataFrame({"effect": effects, "se": se, "cluster": 0}),
+                'available': False,
+                'reason': 'Scikit-learn required for conflict detection'
+            }
         
-        if k_candidates is None:
-            k_candidates = [2, 3, 4]
-        
-        best_k, best_score, best_km = 1, -1, None
-        
-        for k in k_candidates:
-            if k <= len(effects):
-                km = KMeans(n_clusters=k, n_init=20, random_state=42).fit(effects.reshape(-1,1))
-                score = silhouette_score(effects.reshape(-1,1), km.labels_)
-                if score > best_score:
-                    best_k, best_score, best_km = k, score, km
-        
-        if best_km is not None:
-            clusters = pd.DataFrame({
-                "effect": effects, 
-                "se": se, 
-                "cluster": best_km.labels_
-            })
-            centers = clusters.groupby("cluster")["effect"].mean()
-            delta = centers.max() - centers.min()
-        else:
-            clusters = pd.DataFrame({"effect": effects, "se": se, "cluster": 0})
-            delta = 0
-        
-        return {
-            'k': best_k, 
-            'silhouette': best_score,
-            'delta': delta, 
-            'clusters': clusters,
-            'conflicting': best_k > 1 and delta > 0.5
-        }
+        try:
+            if k_candidates is None:
+                k_candidates = [2, 3, 4]
+            
+            best_k, best_score, best_km = 1, -1, None
+            
+            for k in k_candidates:
+                if k <= len(effects):
+                    km = KMeans(n_clusters=k, n_init=20, random_state=42).fit(effects.reshape(-1,1))
+                    score = silhouette_score(effects.reshape(-1,1), km.labels_)
+                    if score > best_score:
+                        best_k, best_score, best_km = k, score, km
+            
+            if best_km is not None:
+                clusters = pd.DataFrame({
+                    "effect": effects, 
+                    "se": se, 
+                    "cluster": best_km.labels_
+                })
+                centers = clusters.groupby("cluster")["effect"].mean()
+                delta = centers.max() - centers.min()
+            else:
+                clusters = pd.DataFrame({"effect": effects, "se": se, "cluster": 0})
+                delta = 0
+            
+            return {
+                'k': best_k, 
+                'silhouette': best_score,
+                'delta': delta, 
+                'clusters': clusters,
+                'conflicting': best_k > 1 and delta > 0.5,
+                'available': True
+            }
+            
+        except Exception as e:
+            logger.warning(f"Conflict detection failed: {e}")
+            return {
+                'k': 1, 
+                'conflicting': False,
+                'silhouette': 0.0,
+                'delta': 0.0,
+                'clusters': pd.DataFrame({"effect": effects, "se": se, "cluster": 0}),
+                'available': False,
+                'error': str(e)
+            }
     
     @staticmethod
     def heterogeneity_sources(effects: np.ndarray, predictors: pd.DataFrame) -> Dict[str, Any]:
@@ -1219,18 +1241,39 @@ class UnifiedMetaAnalysis:
     def _egger_test(self, effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
         """Egger's regression test"""
         if not HAS_STATSMODELS:
-            return {'available': False}
+            return {
+                'available': False,
+                'success': False,
+                'reason': 'Statsmodels required for Egger test',
+                'intercept': None,
+                'p_value': None,
+                'significant': False
+            }
         
-        precision = 1 / se
-        model = sm.OLS(effects, sm.add_constant(precision)).fit()
-        intercept = model.params[0]
-        p_value = model.pvalues[0]
-        
-        return {
-            'intercept': intercept,
-            'p_value': p_value,
-            'significant': p_value < self.config.alpha
-        }
+        try:
+            precision = 1 / se
+            model = sm.OLS(effects, sm.add_constant(precision)).fit()
+            intercept = model.params[0]
+            p_value = model.pvalues[0]
+            
+            return {
+                'available': True,
+                'success': True,
+                'intercept': intercept,
+                'p_value': p_value,
+                'significant': p_value < self.config.alpha
+            }
+            
+        except Exception as e:
+            logger.warning(f"Egger test failed: {e}")
+            return {
+                'available': False,
+                'success': False,
+                'error': str(e),
+                'intercept': None,
+                'p_value': None,
+                'significant': False
+            }
     
     def _begg_test(self, effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
         """Begg's rank correlation test"""
@@ -1246,116 +1289,207 @@ class UnifiedMetaAnalysis:
     def _pet_peese_analysis(self, effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
         """PET-PEESE bias correction (from CBAMM)"""
         if not HAS_STATSMODELS:
-            return {'available': False}
+            return {
+                'available': False,
+                'success': False,
+                'reason': 'Statsmodels required for PET-PEESE analysis',
+                'pet_intercept': None,
+                'pet_p_value': None,
+                'peese_intercept': None,
+                'peese_p_value': None,
+                'corrected_effect': None,
+                'use_peese': False
+            }
         
-        weights = 1 / se**2
-        
-        # PET (Precision-Effect Test)
-        pet_model = sm.WLS(effects, sm.add_constant(se), weights=weights).fit()
-        pet_intercept = pet_model.params[0]
-        pet_p = pet_model.pvalues[0]
-        
-        # PEESE (Precision-Effect Estimate with Standard Error)
-        peese_model = sm.WLS(effects, sm.add_constant(se**2), weights=weights).fit()
-        peese_intercept = peese_model.params[0]
-        peese_p = peese_model.pvalues[0]
-        
-        # Conditional selection: use PEESE if PET shows significance
-        corrected_effect = peese_intercept if pet_p < 0.05 else pet_intercept
-        
-        return {
-            'pet_intercept': pet_intercept,
-            'pet_p_value': pet_p,
-            'peese_intercept': peese_intercept,
-            'peese_p_value': peese_p,
-            'corrected_effect': corrected_effect,
-            'use_peese': pet_p < 0.05
-        }
+        try:
+            weights = 1 / se**2
+            
+            # PET (Precision-Effect Test)
+            pet_model = sm.WLS(effects, sm.add_constant(se), weights=weights).fit()
+            pet_intercept = pet_model.params[0]
+            pet_p = pet_model.pvalues[0]
+            
+            # PEESE (Precision-Effect Estimate with Standard Error)
+            peese_model = sm.WLS(effects, sm.add_constant(se**2), weights=weights).fit()
+            peese_intercept = peese_model.params[0]
+            peese_p = peese_model.pvalues[0]
+            
+            # Conditional selection: use PEESE if PET shows significance
+            corrected_effect = peese_intercept if pet_p < 0.05 else pet_intercept
+            
+            return {
+                'available': True,
+                'success': True,
+                'pet_intercept': pet_intercept,
+                'pet_p_value': pet_p,
+                'peese_intercept': peese_intercept,
+                'peese_p_value': peese_p,
+                'corrected_effect': corrected_effect,
+                'use_peese': pet_p < 0.05
+            }
+            
+        except Exception as e:
+            logger.warning(f"PET-PEESE analysis failed: {e}")
+            return {
+                'available': False,
+                'success': False,
+                'error': str(e),
+                'pet_intercept': None,
+                'pet_p_value': None,
+                'peese_intercept': None,
+                'peese_p_value': None,
+                'corrected_effect': None,
+                'use_peese': False
+            }
     
     def _trim_and_fill_enhanced(self, effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
         """Enhanced Duval & Tweedie trim-and-fill"""
-        variances = se**2
-        
-        if len(effects) < 3:
-            return {'n_imputed': 0, 'direction': 'none'}
-        
-        weights = 1 / variances
-        pooled_effect = np.sum(weights * effects) / np.sum(weights)
-        
-        centered_effects = effects - pooled_effect
-        n_left = np.sum(centered_effects < 0)
-        n_right = np.sum(centered_effects > 0)
-        
-        if abs(n_left - n_right) <= 1:
-            return {'n_imputed': 0, 'direction': 'none', 'adjusted_effect': pooled_effect}
-        
-        direction = 'left' if n_left < n_right else 'right'
-        n_imputed = min(abs(n_right - n_left), len(effects) // 3)
-        
-        # Create imputed studies
-        if direction == 'left':
-            extreme_indices = np.argsort(centered_effects)[-n_imputed:]
-        else:
-            extreme_indices = np.argsort(centered_effects)[:n_imputed]
-        
-        imputed_effects = 2 * pooled_effect - effects[extreme_indices]
-        imputed_variances = variances[extreme_indices]
-        
-        # Adjusted estimate
-        all_effects = np.concatenate([effects, imputed_effects])
-        all_weights = np.concatenate([1/variances, 1/imputed_variances])
-        adjusted_effect = np.sum(all_weights * all_effects) / np.sum(all_weights)
-        
-        return {
-            'n_imputed': n_imputed,
-            'direction': direction,
-            'adjusted_effect': adjusted_effect,
-            'original_effect': pooled_effect,
-            'effect_change': adjusted_effect - pooled_effect
-        }
+        try:
+            variances = se**2
+            
+            if len(effects) < 3:
+                return {
+                    'available': True,
+                    'success': True,
+                    'n_imputed': 0, 
+                    'direction': 'none',
+                    'adjusted_effect': np.mean(effects) if len(effects) > 0 else 0,
+                    'message': 'Insufficient studies for trim-and-fill'
+                }
+            
+            weights = 1 / variances
+            pooled_effect = np.sum(weights * effects) / np.sum(weights)
+            
+            centered_effects = effects - pooled_effect
+            n_left = np.sum(centered_effects < 0)
+            n_right = np.sum(centered_effects > 0)
+            
+            if abs(n_left - n_right) <= 1:
+                return {
+                    'available': True,
+                    'success': True,
+                    'n_imputed': 0, 
+                    'direction': 'none', 
+                    'adjusted_effect': pooled_effect,
+                    'original_effect': pooled_effect,
+                    'effect_change': 0
+                }
+            
+            direction = 'left' if n_left < n_right else 'right'
+            n_imputed = min(abs(n_right - n_left), len(effects) // 3)
+            
+            # Create imputed studies
+            if direction == 'left':
+                extreme_indices = np.argsort(centered_effects)[-n_imputed:]
+            else:
+                extreme_indices = np.argsort(centered_effects)[:n_imputed]
+            
+            imputed_effects = 2 * pooled_effect - effects[extreme_indices]
+            imputed_variances = variances[extreme_indices]
+            
+            # Adjusted estimate
+            all_effects = np.concatenate([effects, imputed_effects])
+            all_weights = np.concatenate([1/variances, 1/imputed_variances])
+            adjusted_effect = np.sum(all_weights * all_effects) / np.sum(all_weights)
+            
+            return {
+                'available': True,
+                'success': True,
+                'n_imputed': n_imputed,
+                'direction': direction,
+                'adjusted_effect': adjusted_effect,
+                'original_effect': pooled_effect,
+                'effect_change': adjusted_effect - pooled_effect
+            }
+            
+        except Exception as e:
+            logger.warning(f"Trim-and-fill analysis failed: {e}")
+            return {
+                'available': False,
+                'success': False,
+                'error': str(e),
+                'n_imputed': 0,
+                'direction': 'none',
+                'adjusted_effect': None,
+                'original_effect': None,
+                'effect_change': None
+            }
     
     def _p_curve_analysis(self, effects: np.ndarray, se: np.ndarray) -> Dict[str, Any]:
         """P-curve evidential value test"""
-        z = effects / se
-        pvals = 2 * (1 - norm.cdf(np.abs(z)))
-        
-        significant = pvals[pvals < 0.05]
-        if len(significant) == 0:
-            return {'n_significant': 0, 'message': 'No significant studies for p-curve'}
-        
-        prop_low = np.mean(significant < 0.025)
-        test_stat = 2 * len(significant) * (prop_low - 0.5)**2
-        pval = 1 - chi2.cdf(test_stat, 1)
-        
-        return {
-            'n_significant': len(significant),
-            'prop_p_less_025': prop_low,
-            'chi2_statistic': test_stat,
-            'p_value': pval,
-            'evidential_value': pval < 0.05
-        }
+        try:
+            z = effects / se
+            pvals = 2 * (1 - norm.cdf(np.abs(z)))
+            
+            significant = pvals[pvals < 0.05]
+            if len(significant) == 0:
+                return {
+                    'available': True,
+                    'success': True,
+                    'n_significant': 0, 
+                    'message': 'No significant studies for p-curve',
+                    'evidential_value': False
+                }
+            
+            prop_low = np.mean(significant < 0.025)
+            test_stat = 2 * len(significant) * (prop_low - 0.5)**2
+            pval = 1 - chi2.cdf(test_stat, 1)
+            
+            return {
+                'available': True,
+                'success': True,
+                'n_significant': len(significant),
+                'prop_p_less_025': prop_low,
+                'chi2_statistic': test_stat,
+                'p_value': pval,
+                'evidential_value': pval < 0.05
+            }
+            
+        except Exception as e:
+            logger.warning(f"P-curve analysis failed: {e}")
+            return {
+                'available': False,
+                'success': False,
+                'error': str(e),
+                'n_significant': 0,
+                'evidential_value': False
+            }
     
     def _test_excess_significance(self, effects: np.ndarray, se: np.ndarray, 
                                  true_effect: Optional[float] = None) -> Dict[str, Any]:
         """Test for Excess Significance"""
-        if true_effect is None:
-            weights = 1 / (se**2)
-            true_effect = np.sum(weights * effects) / np.sum(weights)
-        
-        power = 1 - norm.cdf(1.96 - true_effect / se)
-        expected_significant = np.sum(power)
-        observed_significant = np.sum(np.abs(effects / se) > 1.96)
-        
-        chi2_stat = (observed_significant - expected_significant)**2 / (expected_significant + 1e-9)
-        p_value = 1 - chi2.cdf(chi2_stat, 1)
-        
-        return {
-            'observed_significant': int(observed_significant),
-            'expected_significant': expected_significant,
-            'chi2_statistic': chi2_stat,
-            'p_value': p_value,
-            'excess_significance': p_value < 0.05
-        }
+        try:
+            if true_effect is None:
+                weights = 1 / (se**2)
+                true_effect = np.sum(weights * effects) / np.sum(weights)
+            
+            power = 1 - norm.cdf(1.96 - true_effect / se)
+            expected_significant = np.sum(power)
+            observed_significant = np.sum(np.abs(effects / se) > 1.96)
+            
+            chi2_stat = (observed_significant - expected_significant)**2 / (expected_significant + 1e-9)
+            p_value = 1 - chi2.cdf(chi2_stat, 1)
+            
+            return {
+                'available': True,
+                'success': True,
+                'observed_significant': int(observed_significant),
+                'expected_significant': expected_significant,
+                'chi2_statistic': chi2_stat,
+                'p_value': p_value,
+                'excess_significance': p_value < 0.05
+            }
+            
+        except Exception as e:
+            logger.warning(f"Excess significance test failed: {e}")
+            return {
+                'available': False,
+                'success': False,
+                'error': str(e),
+                'observed_significant': 0,
+                'expected_significant': 0,
+                'excess_significance': False
+            }
     
     def _weight_function_model(self, effects: np.ndarray, se: np.ndarray,
                               cutpoints: List[float] = None) -> Dict[str, Any]:
@@ -2212,14 +2346,14 @@ class UnifiedMetaAnalysis:
             bias = self.results.bias_assessment
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
+                if pet_peese.get('available', False) and pet_peese.get('success', False) and 'corrected_effect' in pet_peese:
                     ax.axvline(pet_peese['corrected_effect'], color='green', 
                              linestyle=':', linewidth=2, 
                              label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
-                if trim_fill['n_imputed'] > 0:
+                if trim_fill.get('n_imputed', 0) > 0 and 'adjusted_effect' in trim_fill:
                     ax.axvline(trim_fill['adjusted_effect'], color='orange', 
                              linestyle='-.', linewidth=2,
                              label=f'Trim-fill = {trim_fill["adjusted_effect"]:.3f}')
@@ -2483,17 +2617,24 @@ class UnifiedMetaAnalysis:
             
             if hasattr(bias, 'egger'):
                 egger = bias.egger
-                report.append(f"Egger's test: p = {egger.get('p_value', 'N/A')}")
+                if egger.get('available', False) and egger.get('p_value') is not None:
+                    report.append(f"Egger's test: p = {egger['p_value']:.3f}")
+                else:
+                    report.append("Egger's test: N/A (requires statsmodels)")
             
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
-                if pet_peese.get('success', True):
+                if pet_peese.get('available', False) and pet_peese.get('success', False) and 'corrected_effect' in pet_peese:
                     report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                else:
+                    report.append("PET-PEESE: N/A (requires statsmodels)")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
-                if trim_fill['n_imputed'] > 0:
+                if trim_fill.get('n_imputed', 0) > 0:
                     report.append(f"Trim-and-fill: {trim_fill['n_imputed']} studies imputed")
+                else:
+                    report.append("Trim-and-fill: No studies imputed")
             
             report.append("")
         
@@ -2511,7 +2652,7 @@ class UnifiedMetaAnalysis:
             report.append("")
         
         # Subgroups
-        if hasattr(self.results, 'subgroups'):
+        if hasattr(self.results, 'subgroups') and self.results.subgroups is not None:
             report.append("SUBGROUP ANALYSIS")
             report.append("-" * 16)
             
@@ -2527,6 +2668,8 @@ class UnifiedMetaAnalysis:
             if '_between_group_test' in self.results.subgroups:
                 between = self.results.subgroups['_between_group_test']
                 report.append(f"Between-group test: p = {between['p_value']:.3f}")
+            
+            report.append("")
             
             report.append("")
         
@@ -4482,15 +4625,23 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
         bias = meta.results.bias_assessment
         
         if hasattr(bias, 'egger'):
-            egger_p = bias.egger.get('p_value', 'N/A')
-            print(f"Egger test p-value: {egger_p:.3f}" if egger_p != 'N/A' else f"Egger test p-value: {egger_p}")
-            results['egger_p'] = egger_p
+            egger = bias.egger
+            if egger.get('available', False) and egger.get('p_value') is not None:
+                egger_p = egger['p_value']
+                print(f"Egger test p-value: {egger_p:.3f}")
+                results['egger_p'] = egger_p
+            else:
+                print("Egger test p-value: N/A (requires statsmodels)")
+                results['egger_p'] = None
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
-            if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
+            if pet_peese.get('available', False) and pet_peese.get('success', False) and 'corrected_effect' in pet_peese:
                 print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
                 results['pet_peese_effect'] = pet_peese['corrected_effect']
+            else:
+                print("PET-PEESE corrected effect: N/A (requires statsmodels)")
+                results['pet_peese_effect'] = None
         
         if hasattr(bias, 'trim_fill'):
             trim_fill = bias.trim_fill
