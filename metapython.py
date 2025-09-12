@@ -43,6 +43,56 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ===================================================================
+# SAFE FORMATTING UTILITIES
+# ===================================================================
+
+def _fmt_float(value, decimals: int = 3) -> str:
+    """
+    Safely format a value as float to N decimals.
+    Returns 'N/A' if not numeric, None, NaN, or Inf.
+    
+    This helper prevents crashes when formatting potentially non-numeric values
+    from dictionary lookups or missing dependencies in minimal environments.
+    
+    Args:
+        value: Value to format (can be numeric, string, None, etc.)
+        decimals: Number of decimal places (default: 3)
+        
+    Returns:
+        str: Formatted float string or 'N/A' if not valid numeric
+    """
+    try:
+        if value is None:
+            return 'N/A'
+        
+        # Handle string 'N/A' or similar non-numeric strings
+        if isinstance(value, str):
+            if value.upper() in ['N/A', 'NA', 'NULL', 'NONE', '']:
+                return 'N/A'
+            # Try to convert string to float
+            try:
+                float_val = float(value)
+            except (ValueError, TypeError):
+                return 'N/A'
+        else:
+            float_val = float(value)
+        
+        # Check for NaN or Inf
+        if not (np and hasattr(np, 'isnan') and hasattr(np, 'isinf')):
+            # Fallback check if numpy not available
+            if str(float_val).lower() in ['nan', 'inf', '-inf']:
+                return 'N/A'
+        else:
+            if np.isnan(float_val) or np.isinf(float_val):
+                return 'N/A'
+        
+        # Format the float
+        return f"{float_val:.{decimals}f}"
+        
+    except (ValueError, TypeError, OverflowError):
+        return 'N/A'
+
 # Optional dependencies with graceful fallback
 try:
     import pymc as pm
@@ -1694,10 +1744,10 @@ class UnifiedMetaAnalysis:
             f.write(f"New studies added: {update_results['valid_studies_added']}\n")
             
             if self._fitted:
-                f.write(f"Current pooled effect: {self.results.random_effects.effect:.3f}\n")
-                f.write(f"95% CI: [{self.results.random_effects.ci_low:.3f}, "
-                       f"{self.results.random_effects.ci_high:.3f}]\n")
-                f.write(f"Heterogeneity I²: {self.results.heterogeneity.I2:.1f}%\n")
+                f.write(f"Current pooled effect: {_fmt_float(self.results.random_effects.effect)}\n")
+                f.write(f"95% CI: [{_fmt_float(self.results.random_effects.ci_low)}, "
+                       f"{_fmt_float(self.results.random_effects.ci_high)}]\n")
+                f.write(f"Heterogeneity I²: {_fmt_float(self.results.heterogeneity.I2, 1)}%\n")
         
         return {
             'update_results': update_results,
@@ -1961,7 +2011,7 @@ class UnifiedMetaAnalysis:
             x_range = np.linspace(X.min(), X.max(), 100)
             y_pred = model.params[0] + model.params[1] * x_range
             ax.plot(x_range, y_pred, 'r-', linewidth=2, 
-                   label=f'Regression line (slope={model.params[1]:.3f})')
+                   label=f'Regression line (slope={_fmt_float(model.params[1])})')
         
         # Reference lines
         pooled_effect = self.results.random_effects.effect
@@ -2205,7 +2255,7 @@ class UnifiedMetaAnalysis:
         
         # Effect lines
         ax.axvline(overall_effect, color='red', linestyle='--', linewidth=2,
-                  label=f'Overall effect = {overall_effect:.3f}')
+                  label=f'Overall effect = {_fmt_float(overall_effect)}')
         
         # Bias-corrected estimates if available
         if include_bias_methods and hasattr(self.results, 'bias_assessment'):
@@ -2215,14 +2265,14 @@ class UnifiedMetaAnalysis:
                 if pet_peese.get('success', True):
                     ax.axvline(pet_peese['corrected_effect'], color='green', 
                              linestyle=':', linewidth=2, 
-                             label=f'PET-PEESE = {pet_peese["corrected_effect"]:.3f}')
+                             label=f'PET-PEESE = {_fmt_float(pet_peese["corrected_effect"])}')
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
                 if trim_fill['n_imputed'] > 0:
                     ax.axvline(trim_fill['adjusted_effect'], color='orange', 
                              linestyle='-.', linewidth=2,
-                             label=f'Trim-fill = {trim_fill["adjusted_effect"]:.3f}')
+                             label=f'Trim-fill = {_fmt_float(trim_fill["adjusted_effect"])}')
         
         ax.set_xlabel('Effect Size', fontsize=12)
         ax.set_ylabel('Standard Error', fontsize=12)
@@ -2358,9 +2408,9 @@ class UnifiedMetaAnalysis:
         
         interpretation = (
             f"The meta-analysis of {len(self.df)} studies found a {magnitude} {direction} "
-            f"effect (effect size = {effect:.3f}, 95% CI: {ci_low:.3f} to {ci_high:.3f}) "
-            f"that was {significance} (p = {p_val:.3f}). "
-            f"Heterogeneity was {het_level} (I² = {i2:.1f}%)."
+            f"effect (effect size = {_fmt_float(effect)}, 95% CI: {_fmt_float(ci_low)} to {_fmt_float(ci_high)}) "
+            f"that was {significance} (p = {_fmt_float(p_val)}). "
+            f"Heterogeneity was {het_level} (I² = {_fmt_float(i2, 1)}%)."
         )
         
         # Add bias assessment if available
@@ -2394,11 +2444,11 @@ class UnifiedMetaAnalysis:
         fe = self.results.fixed_effects
         rows.append({
             'Model': 'Fixed Effects',
-            'Effect': f"{fe.effect:.3f}",
-            'SE': f"{fe.se:.3f}",
-            '95% CI': f"[{fe.ci_low:.3f}, {fe.ci_high:.3f}]",
-            'Z/t': f"{fe.z_statistic:.2f}",
-            'p-value': f"{fe.p_value:.3f}",
+            'Effect': _fmt_float(fe.effect),
+            'SE': _fmt_float(fe.se),
+            '95% CI': f"[{_fmt_float(fe.ci_low)}, {_fmt_float(fe.ci_high)}]",
+            'Z/t': _fmt_float(fe.z_statistic, 2),
+            'p-value': _fmt_float(fe.p_value),
             'Notes': 'Assumes τ² = 0'
         })
         
@@ -2406,23 +2456,23 @@ class UnifiedMetaAnalysis:
         re = self.results.random_effects
         rows.append({
             'Model': 'Random Effects',
-            'Effect': f"{re.effect:.3f}",
-            'SE': f"{re.se:.3f}",
-            '95% CI': f"[{re.ci_low:.3f}, {re.ci_high:.3f}]",
-            'Z/t': f"{re.z_statistic:.2f}",
-            'p-value': f"{re.p_value:.3f}",
-            'Notes': f"τ² = {re.tau2:.3f} ({self.config.tau2_method})"
+            'Effect': _fmt_float(re.effect),
+            'SE': _fmt_float(re.se),
+            '95% CI': f"[{_fmt_float(re.ci_low)}, {_fmt_float(re.ci_high)}]",
+            'Z/t': _fmt_float(re.z_statistic, 2),
+            'p-value': _fmt_float(re.p_value),
+            'Notes': f"τ² = {_fmt_float(re.tau2)} ({self.config.tau2_method})"
         })
         
         # Heterogeneity row
         het = self.results.heterogeneity
         rows.append({
             'Model': 'Heterogeneity',
-            'Effect': f"I² = {het.I2:.1f}%",
-            'SE': f"H² = {het.H2:.2f}",
-            '95% CI': f"τ² = {het.tau2:.3f}",
-            'Z/t': f"Q = {het.Q:.2f}",
-            'p-value': f"{het.p_value:.3f}",
+            'Effect': f"I² = {_fmt_float(het.I2, 1)}%",
+            'SE': f"H² = {_fmt_float(het.H2, 2)}",
+            '95% CI': f"τ² = {_fmt_float(het.tau2)}",
+            'Z/t': f"Q = {_fmt_float(het.Q, 2)}",
+            'p-value': _fmt_float(het.p_value),
             'Notes': f"df = {het.df}"
         })
         
@@ -2431,9 +2481,9 @@ class UnifiedMetaAnalysis:
             pi = self.results.prediction_interval
             rows.append({
                 'Model': 'Prediction Interval',
-                'Effect': f"{re.effect:.3f}",
-                'SE': f"{pi.se:.3f}",
-                '95% CI': f"[{pi.low:.3f}, {pi.high:.3f}]",
+                'Effect': _fmt_float(re.effect),
+                'SE': _fmt_float(pi.se),
+                '95% CI': f"[{_fmt_float(pi.low)}, {_fmt_float(pi.high)}]",
                 'Z/t': '—',
                 'p-value': '—',
                 'Notes': 'Future study range'
@@ -2470,9 +2520,9 @@ class UnifiedMetaAnalysis:
         het = self.results.heterogeneity
         report.append("HETEROGENEITY ASSESSMENT")
         report.append("-" * 23)
-        report.append(f"Q = {het.Q:.2f}, df = {het.df}, p = {het.p_value:.3f}")
-        report.append(f"I² = {het.I2:.1f}%, H² = {het.H2:.2f}")
-        report.append(f"τ² = {het.tau2:.3f}")
+        report.append(f"Q = {_fmt_float(het.Q, 2)}, df = {het.df}, p = {_fmt_float(het.p_value)}")
+        report.append(f"I² = {_fmt_float(het.I2, 1)}%, H² = {_fmt_float(het.H2, 2)}")
+        report.append(f"τ² = {_fmt_float(het.tau2)}")
         report.append("")
         
         # Publication bias
@@ -2483,12 +2533,12 @@ class UnifiedMetaAnalysis:
             
             if hasattr(bias, 'egger'):
                 egger = bias.egger
-                report.append(f"Egger's test: p = {egger.get('p_value', 'N/A')}")
+                report.append(f"Egger's test: p = {_fmt_float(egger.get('p_value', 'N/A'))}")
             
             if hasattr(bias, 'pet_peese'):
                 pet_peese = bias.pet_peese
                 if pet_peese.get('success', True):
-                    report.append(f"PET-PEESE corrected: {pet_peese['corrected_effect']:.3f}")
+                    report.append(f"PET-PEESE corrected: {_fmt_float(pet_peese['corrected_effect'])}")
             
             if hasattr(bias, 'trim_fill'):
                 trim_fill = bias.trim_fill
@@ -2505,7 +2555,7 @@ class UnifiedMetaAnalysis:
             if hasattr(conflict, 'conflicting'):
                 if conflict.conflicting:
                     report.append(f"Conflicting results detected: {conflict.k} clusters")
-                    report.append(f"Maximum difference: {conflict.delta:.3f}")
+                    report.append(f"Maximum difference: {_fmt_float(conflict.delta)}")
                 else:
                     report.append("No significant conflicts detected")
             report.append("")
@@ -2522,11 +2572,11 @@ class UnifiedMetaAnalysis:
                     eff = result.random_effects.effect
                     ci_low = result.random_effects.ci_low
                     ci_high = result.random_effects.ci_high
-                    report.append(f"{subgroup}: {eff:.3f} [{ci_low:.3f}, {ci_high:.3f}]")
+                    report.append(f"{subgroup}: {_fmt_float(eff)} [{_fmt_float(ci_low)}, {_fmt_float(ci_high)}]")
             
             if '_between_group_test' in self.results.subgroups:
                 between = self.results.subgroups['_between_group_test']
-                report.append(f"Between-group test: p = {between['p_value']:.3f}")
+                report.append(f"Between-group test: p = {_fmt_float(between['p_value'])}")
             
             report.append("")
         
@@ -2659,7 +2709,7 @@ class UnifiedMetaAnalysis:
             effect = self.results.random_effects.effect
             ci_low = self.results.random_effects.ci_low
             ci_high = self.results.random_effects.ci_high
-            return f"UnifiedMetaAnalysis(effect={effect:.3f} [{ci_low:.3f}, {ci_high:.3f}], k={len(self.df)})"
+            return f"UnifiedMetaAnalysis(effect={_fmt_float(effect)} [{_fmt_float(ci_low)}, {_fmt_float(ci_high)}], k={len(self.df)})"
         else:
             return f"UnifiedMetaAnalysis(k={len(self.df)}, not fitted)"
 
@@ -3219,9 +3269,9 @@ class NetworkMetaRankings:
             
             # Interpretation
             if p_value < 0.05:
-                interpretation = f"Significant inconsistency detected (p = {p_value:.3f})"
+                interpretation = f"Significant inconsistency detected (p = {_fmt_float(p_value)})"
             elif not np.isnan(p_value):
-                interpretation = f"No significant inconsistency (p = {p_value:.3f})"
+                interpretation = f"No significant inconsistency (p = {_fmt_float(p_value)})"
             else:
                 interpretation = "Inconsistency test not interpretable"
             
@@ -4372,7 +4422,7 @@ def generate_demo_data(n_studies: int = 25, seed: int = 42) -> pd.DataFrame:
     print(f"Generated comprehensive dataset: {len(demo_data)} studies")
     print(f"True effect: {true_effect}, Between-study SD: {between_study_sd}")
     print(f"Simulated conflicts: {len(np.unique(clusters))} research groups")
-    print(f"Effect range: {min(observed_effects):.3f} to {max(observed_effects):.3f}")
+    print(f"Effect range: {_fmt_float(min(observed_effects))} to {_fmt_float(max(observed_effects))}")
     
     return demo_data
 
@@ -4459,7 +4509,7 @@ def run_diagnostics(meta) -> Dict[str, Any]:
     print(f"Leave-one-out: {len(influential)} influential studies")
     if not influential.empty:
         print(f"Most influential: {influential.iloc[0]['excluded_study']} "
-              f"(change: {influential.iloc[0]['effect_change']:.3f})")
+              f"(change: {_fmt_float(influential.iloc[0]['effect_change'])})")
     
     # Influence diagnostics
     influence_data = meta.influence_diagnostics()
@@ -4483,13 +4533,13 @@ def run_bias_assessment(meta) -> Dict[str, Any]:
         
         if hasattr(bias, 'egger'):
             egger_p = bias.egger.get('p_value', 'N/A')
-            print(f"Egger test p-value: {egger_p:.3f}" if egger_p != 'N/A' else f"Egger test p-value: {egger_p}")
+            print(f"Egger test p-value: {_fmt_float(egger_p)}")
             results['egger_p'] = egger_p
         
         if hasattr(bias, 'pet_peese'):
             pet_peese = bias.pet_peese
             if pet_peese.get('success', True) and 'corrected_effect' in pet_peese:
-                print(f"PET-PEESE corrected effect: {pet_peese['corrected_effect']:.3f}")
+                print(f"PET-PEESE corrected effect: {_fmt_float(pet_peese['corrected_effect'])}")
                 results['pet_peese_effect'] = pet_peese['corrected_effect']
         
         if hasattr(bias, 'trim_fill'):
@@ -4517,8 +4567,8 @@ def run_conflict_detection(meta) -> Dict[str, Any]:
         if hasattr(conflict, 'conflicting'):
             print(f"Conflicts detected: {conflict.conflicting}")
             print(f"Number of clusters: {conflict.k}")
-            print(f"Silhouette score: {conflict.silhouette:.3f}")
-            print(f"Effect range: {conflict.delta:.3f}")
+            print(f"Silhouette score: {_fmt_float(conflict.silhouette)}")
+            print(f"Effect range: {_fmt_float(conflict.delta)}")
             
             results = {
                 'conflicts_detected': conflict.conflicting,
@@ -4535,7 +4585,7 @@ def run_multiverse(meta) -> Dict[str, Any]:
     
     multiverse_results = meta.multiverse_analysis()
     effect_range = multiverse_results['effect'].max() - multiverse_results['effect'].min()
-    print(f"Multiverse analysis: Effect range = {effect_range:.3f}")
+    print(f"Multiverse analysis: Effect range = {_fmt_float(effect_range)}")
     print(f"Number of specifications: {len(multiverse_results)}")
     
     return {
@@ -4550,7 +4600,7 @@ def run_missing_sensitivity(meta, n_max: int = 3) -> Dict[str, Any]:
     
     missing_results = meta.missing_study_sensitivity(n_max=n_max)
     max_change = missing_results['effect_change'].abs().max()
-    print(f"Missing study sensitivity: Max effect change = {max_change:.3f}")
+    print(f"Missing study sensitivity: Max effect change = {_fmt_float(max_change)}")
     
     return {
         'max_effect_change': max_change,
@@ -4565,8 +4615,8 @@ def run_sequential_analysis(meta) -> Dict[str, Any]:
     cumulative = meta.cumulative_analysis(sort_by='year')
     final_effect = cumulative.iloc[-1]['cumulative_effect']
     effect_evolution = cumulative.iloc[-1]['effect_change']
-    print(f"Cumulative analysis: Final effect = {final_effect:.3f}")
-    print(f"Effect evolution: {effect_evolution:.3f}")
+    print(f"Cumulative analysis: Final effect = {_fmt_float(final_effect)}")
+    print(f"Effect evolution: {_fmt_float(effect_evolution)}")
     
     # Trial Sequential Analysis
     tsa_results = meta.trial_sequential_analysis(target_effect=0.3)
@@ -4586,8 +4636,8 @@ def run_dose_response(meta) -> Dict[str, Any]:
     print_subsection("8. DOSE-RESPONSE ANALYSIS", "-")
     
     dose_results = meta.dose_response_analysis('dose_mg', model_type='linear')
-    print(f"Dose-response slope: {dose_results['slope']:.4f} (p = {dose_results['p_slope']:.3f})")
-    print(f"R² = {dose_results['r_squared']:.3f}")
+    print(f"Dose-response slope: {_fmt_float(dose_results['slope'], 4)} (p = {_fmt_float(dose_results['p_slope'])})")
+    print(f"R² = {_fmt_float(dose_results['r_squared'])}")
     
     return {
         'slope': dose_results['slope'],
@@ -4605,8 +4655,8 @@ def run_bayesian(meta) -> Dict[str, Any]:
         try:
             bayes_results = meta.bayesian_stacking(chains=2, draws=500)
             if bayes_results.get('success', False):
-                print(f"Bayesian posterior mean: {bayes_results['posterior_mean']:.3f}")
-                print(f"Posterior SD: {bayes_results['posterior_sd']:.3f}")
+                print(f"Bayesian posterior mean: {_fmt_float(bayes_results['posterior_mean'])}")
+                print(f"Posterior SD: {_fmt_float(bayes_results['posterior_sd'])}")
                 results = {
                     'posterior_mean': bayes_results['posterior_mean'],
                     'posterior_sd': bayes_results['posterior_sd'],
@@ -4650,7 +4700,7 @@ def run_simulation() -> Dict[str, Any]:
         bias_range = (sim_df['bias'].min(), sim_df['bias'].max())
         coverage_range = (sim_df['coverage_prob'].min(), sim_df['coverage_prob'].max())
         print(f"Simulation study: Bias range = {bias_range[0]:.4f} to {bias_range[1]:.4f}")
-        print(f"Coverage probability range: {coverage_range[0]:.3f} to {coverage_range[1]:.3f}")
+        print(f"Coverage probability range: {_fmt_float(coverage_range[0])} to {_fmt_float(coverage_range[1])}")
         
         results.update({
             'bias_range': bias_range,
@@ -4681,7 +4731,15 @@ def run_living_meta(meta) -> Dict[str, Any]:
 
 def run_unified_demo(n_studies: int = 25, seed: int = 42, output_dir: str = ".", 
                      save_visuals: bool = True, save_text_report: bool = True) -> 'UnifiedMetaAnalysis':
-    """Comprehensive demonstration of all unified capabilities including new modules"""
+    """
+    Comprehensive demonstration of all unified capabilities including new modules
+    
+    NOTE: This demo is designed to be robust to missing/optional dependencies and degraded 
+    output environments. In minimal environments (e.g., Codespaces without full dependencies),
+    some advanced features may be disabled but the demo will not crash. This is expected
+    behavior, not a failure. The _fmt_float helper ensures safe formatting of all numeric
+    outputs even when values are missing or dependencies are unavailable.
+    """
     
     # Print standardized heading
     print_section("PyMeta-CBAMM Unified Suite v3.0 - COMPLETE FEATURE DEMONSTRATION")
