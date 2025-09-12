@@ -18,10 +18,33 @@ Phase 4 Extensions:
 - CLI and pipeline automation (meta_cli, meta_pipeline.yaml)
 - Performance optimizations (Numba hot paths, memory-efficient iterators)
 
+Runtime Robustness for Minimal Environments:
+- Configures PyTensor for minimal compilation overhead (important for Codespaces/static libpython)
+- Throttles spaCy model warnings to prevent spam in containerized environments
+- Graceful degradation when advanced dependencies are unavailable
+
+CLI Usage with Environment Variables:
+For minimal environments or to suppress PyTensor compilation, set:
+export PYTENSOR_FLAGS="device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
+
+Then run: python metapython.py
+
 Author: PyMeta-CBAMM Development Team
 License: MIT
 Version: 0.4.0
 """
+
+# ===================================================================
+# MINIMAL ENVIRONMENT CONFIGURATION
+# Configure PyTensor flags before any imports to suppress C compilation
+# in minimal environments like Codespaces, containers, or static libpython
+# ===================================================================
+
+import os
+# Set PyTensor configuration to minimize compilation overhead
+# This must be done before any PyMC/PyTensor imports
+if 'PYTENSOR_FLAGS' not in os.environ:
+    os.environ['PYTENSOR_FLAGS'] = "device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
 
 import numpy as np
 import pandas as pd
@@ -43,14 +66,24 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Optional dependencies with graceful fallback
+# ===================================================================
+# OPTIONAL DEPENDENCIES WITH GRACEFUL FALLBACK
+# Minimal environments may lack advanced dependencies - graceful degradation
+# ===================================================================
+
+# PyMC/PyTensor with enhanced error handling for minimal environments
 try:
     import pymc as pm
     import arviz as az
     HAS_PYMC = True
 except ImportError:
+    # Single info log for missing PyMC - no stack trace spam
     HAS_PYMC = False
-    logger.info("PyMC not available - Bayesian methods disabled")
+    logger.info("PyMC/PyTensor not available - Bayesian methods disabled")
+except Exception as e:
+    # Catch any PyTensor compilation or runtime errors gracefully
+    HAS_PYMC = False
+    logger.info("PyMC/PyTensor initialization failed - Bayesian methods disabled")
 
 try:
     import statsmodels.api as sm
@@ -97,6 +130,46 @@ try:
 except ImportError:
     HAS_SPACY = False
     logger.info("spaCy not available - NLP extraction disabled")
+
+# ===================================================================
+# SPACY MODEL HELPER WITH WARNING THROTTLE
+# Ensures missing spaCy model warning appears only once per run
+# ===================================================================
+
+_SPACY_MODEL_WARNING_SHOWN = False
+
+def get_spacy_model(model_name: str = "en_core_web_sm"):
+    """
+    Load spaCy model with throttled warnings for minimal environments.
+    
+    In containerized or minimal environments, spaCy models may not be installed.
+    This helper ensures the warning appears only once per run rather than 
+    spamming logs on every NLP operation.
+    
+    Args:
+        model_name: Name of the spaCy model to load
+        
+    Returns:
+        spacy.Language object if successful, None otherwise
+    """
+    global _SPACY_MODEL_WARNING_SHOWN
+    
+    if not HAS_SPACY:
+        return None
+    
+    try:
+        import spacy
+        return spacy.load(model_name)
+    except OSError:
+        if not _SPACY_MODEL_WARNING_SHOWN:
+            logger.info(f"spaCy model '{model_name}' not found - install with: python -m spacy download {model_name}")
+            _SPACY_MODEL_WARNING_SHOWN = True
+        return None
+    except Exception:
+        if not _SPACY_MODEL_WARNING_SHOWN:
+            logger.info(f"Failed to load spaCy model '{model_name}' - NLP features will use fallback methods")
+            _SPACY_MODEL_WARNING_SHOWN = True
+        return None
 
 try:
     from numba import njit, prange
@@ -703,11 +776,8 @@ class NLPExtractor:
     def __init__(self):
         self.nlp = None
         if HAS_SPACY:
-            try:
-                import spacy
-                self.nlp = spacy.load("en_core_web_sm")
-            except OSError:
-                logger.warning("spaCy model not found - install with: python -m spacy download en_core_web_sm")
+            # Use throttled spaCy model loader to prevent warning spam
+            self.nlp = get_spacy_model("en_core_web_sm")
     
     def extract_effect_sizes(self, text: str) -> Tuple[float, float]:
         """Extract effect size and SE from abstract text"""
@@ -4902,7 +4972,23 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
 # MAIN EXECUTION
 # ===================================================================
 
+# ===================================================================
+# MAIN EXECUTION AND CLI EXAMPLES
+# ===================================================================
+
 if __name__ == '__main__':
+    # CLI Usage Examples for Minimal Environments:
+    # 
+    # For best performance in minimal environments (Codespaces, containers):
+    # export PYTENSOR_FLAGS="device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
+    # python metapython.py
+    #
+    # Or set inline:
+    # PYTENSOR_FLAGS="device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags=" python metapython.py
+    #
+    # The environment variable suppresses PyTensor C compilation which can fail 
+    # in containerized environments with static libpython or missing compilers.
+    
     try:
         print("Starting PyMeta-CBAMM Unified Suite demonstration...")
         demo_meta = run_unified_demo(
@@ -4925,6 +5011,7 @@ if __name__ == '__main__':
         print("- Required dependencies are installed")
         print("- Input data is valid")
         print("- Sufficient disk space for outputs")
+        print("- For PyTensor compilation issues, set PYTENSOR_FLAGS environment variable")
         raise
 
 # ===================================================================
