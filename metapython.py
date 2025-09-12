@@ -5664,35 +5664,6 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
     return UnifiedMetaAnalysis(data, 'effect', 'se', 'study').analyze(include_conflicts=False)
 
 # ===================================================================
-# MAIN EXECUTION
-# ===================================================================
-
-if __name__ == '__main__':
-    try:
-        print("Starting PyMeta-CBAMM Unified Suite demonstration...")
-        demo_meta = run_unified_demo(
-            n_studies=25, 
-            seed=42, 
-            output_dir=".", 
-            save_visuals=True, 
-            save_text_report=True
-        )
-        print(f"\nDemo completed successfully! Unified meta-analysis object returned.")
-        print(f"Access results with: demo_meta.results")
-        print(f"Generate report with: demo_meta.comprehensive_report()")
-        
-    except Exception as e:
-        logger.error(f"Demo failed: {e}")
-        print(f"Demo failed: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nIf you encounter issues, please check:")
-        print("- Required dependencies are installed")
-        print("- Input data is valid")
-        print("- Sufficient disk space for outputs")
-        raise
-
-# ===================================================================
 # CLI AND PIPELINE AUTOMATION
 # ===================================================================
 
@@ -6752,3 +6723,118 @@ __all__ = [
     'meta_from_summary_stats',
     'run_unified_demo'
 ]
+
+# ===================================================================
+# CLI ENTRY POINTS
+# ===================================================================
+
+def main():
+    """Main CLI entry point for Metapython."""
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Metapython v0.8 - Production Meta-Analysis Platform',
+        epilog='For more information, visit: https://github.com/mahmood726-cyber/Metapython'
+    )
+    
+    parser.add_argument('--version', action='version', 
+                       version=f'Metapython {__version__} (API {__api_version__})')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Plugin marketplace commands
+    plugin_parser = subparsers.add_parser('plugin', help='Plugin marketplace operations')
+    plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_command')
+    
+    # Plugin search
+    search_parser = plugin_subparsers.add_parser('search', help='Search plugins')
+    search_parser.add_argument('query', nargs='?', help='Search query')
+    search_parser.add_argument('--capabilities', nargs='+', help='Required capabilities')
+    search_parser.add_argument('--min-trust', type=float, default=0.0, help='Minimum trust score')
+    
+    # Plugin install
+    install_parser = plugin_subparsers.add_parser('install', help='Install plugin')
+    install_parser.add_argument('name', help='Plugin name')
+    install_parser.add_argument('--version', help='Plugin version (default: latest)')
+    
+    # System info
+    info_parser = subparsers.add_parser('info', help='System information')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 0
+    
+    try:
+        if args.command == 'plugin':
+            return _handle_plugin_command(args)
+        elif args.command == 'info':
+            return _handle_info_command(args)
+        else:
+            print(f"Unknown command: {args.command}")
+            return 1
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+def _handle_plugin_command(args):
+    """Handle plugin marketplace commands."""
+    cli = get_marketplace_cli()
+    
+    if args.plugin_command == 'search':
+        filters = {}
+        if args.capabilities:
+            filters['capabilities'] = args.capabilities
+        if args.min_trust > 0:
+            filters['min_trust_score'] = args.min_trust
+            
+        cli.search(args.query, **filters)
+        return 0
+        
+    elif args.plugin_command == 'install':
+        success = cli.install(args.name, args.version or 'latest')
+        return 0 if success else 1
+        
+    else:
+        print("Available plugin commands: search, install")
+        return 1
+
+def _handle_info_command(args):
+    """Handle system info command."""
+    import sys
+    
+    print(f"Metapython {__version__}")
+    print(f"API Version: {__api_version__}")
+    print(f"Python: {sys.version}")
+    print()
+    
+    # Check available features
+    print("Available Features:")
+    compute = get_compute_manager()
+    executors = compute.get_available_executors()
+    
+    if executors:
+        print(f"  Distributed Computing: {', '.join(executors)}")
+    else:
+        print("  Distributed Computing: None (install extras: pip install metapython[distributed])")
+    
+    # Check telemetry status
+    logger = get_logger()
+    print(f"  Telemetry: {'Enabled' if logger.telemetry_enabled else 'Disabled'}")
+    
+    # Check locale
+    i18n = get_i18n_manager()
+    print(f"  Locale: {i18n.current_locale}")
+    print(f"  Supported Locales: {', '.join(i18n.supported_locales)}")
+    
+    return 0
+
+def cli_main():
+    """CLI entry point for meta-cli command."""
+    sys.exit(main())
+
+if __name__ == '__main__':
+    main()
