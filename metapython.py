@@ -98,6 +98,66 @@ except ImportError:
     HAS_SPACY = False
     logger.info("spaCy not available - NLP extraction disabled")
 
+# Phase 6: Cloud and distributed computing optional dependencies
+try:
+    import boto3
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
+    logger.info("boto3 not available - S3 artifact store disabled")
+
+try:
+    from google.cloud import storage as gcs
+    HAS_GCS = True
+except ImportError:
+    HAS_GCS = False
+    logger.info("google-cloud-storage not available - GCS artifact store disabled")
+
+try:
+    from azure.storage.blob import BlobServiceClient
+    HAS_AZURE = True
+except ImportError:
+    HAS_AZURE = False
+    logger.info("azure-storage-blob not available - Azure artifact store disabled")
+
+try:
+    from kubernetes import client, config
+    HAS_KUBERNETES = True
+except ImportError:
+    HAS_KUBERNETES = False
+    logger.info("kubernetes not available - Kubernetes backend disabled")
+
+try:
+    import subprocess
+    import shutil
+    HAS_SUBPROCESS = True
+    # Check for SLURM availability
+    try:
+        subprocess.run(['sinfo', '--version'], capture_output=True, check=True)
+        HAS_SLURM = True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        HAS_SLURM = False
+        logger.info("SLURM not available - SLURM backend disabled")
+except ImportError:
+    HAS_SUBPROCESS = False
+    HAS_SLURM = False
+    logger.info("subprocess not available - external commands disabled")
+
+# Phase 6: Reporting dependencies
+try:
+    import weasyprint
+    HAS_WEASYPRINT = True
+except ImportError:
+    HAS_WEASYPRINT = False
+    logger.info("WeasyPrint not available - PDF export via WeasyPrint disabled")
+
+try:
+    import pdfkit
+    HAS_WKHTMLTOPDF = shutil.which('wkhtmltopdf') is not None if HAS_SUBPROCESS else False
+except ImportError:
+    HAS_WKHTMLTOPDF = False
+    logger.info("pdfkit not available - PDF export via wkhtmltopdf disabled")
+
 try:
     from numba import njit, prange
     HAS_NUMBA = True
@@ -4902,30 +4962,7 @@ def meta_from_summary_stats(means1: List[float], sds1: List[float], n1: List[int
 # MAIN EXECUTION
 # ===================================================================
 
-if __name__ == '__main__':
-    try:
-        print("Starting PyMeta-CBAMM Unified Suite demonstration...")
-        demo_meta = run_unified_demo(
-            n_studies=25, 
-            seed=42, 
-            output_dir=".", 
-            save_visuals=True, 
-            save_text_report=True
-        )
-        print(f"\nDemo completed successfully! Unified meta-analysis object returned.")
-        print(f"Access results with: demo_meta.results")
-        print(f"Generate report with: demo_meta.comprehensive_report()")
-        
-    except Exception as e:
-        logger.error(f"Demo failed: {e}")
-        print(f"Demo failed: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nIf you encounter issues, please check:")
-        print("- Required dependencies are installed")
-        print("- Input data is valid")
-        print("- Sufficient disk space for outputs")
-        raise
+# Main execution is moved to the end of the file after all classes are defined
 
 # ===================================================================
 # CLI AND PIPELINE AUTOMATION
@@ -4938,6 +4975,14 @@ class MetaCLI:
         self.config_file = None
         self.pipeline_file = None
         self.output_dir = "meta_output"
+        
+        # Phase 6: Initialize cloud orchestrator and report generator
+        self.orchestrator = CloudOrchestrator()
+        self.report_generator = ReportGenerator()
+        self.pdf_exporter = PDFExporter()
+        
+        # Register additional backends if available
+        self._initialize_cloud_backends()
         
     def run_from_config(self, config_path: str) -> Dict[str, Any]:
         """Run meta-analysis from YAML configuration file"""
@@ -5437,6 +5482,401 @@ class MetaCLI:
                 plt.close()
             except Exception as e:
                 logger.warning(f"Plot generation failed: {e}")
+    
+    # ===================================================================
+    # PHASE 6: EXTENDED CLI FUNCTIONALITY  
+    # ===================================================================
+    
+    def _initialize_cloud_backends(self):
+        """Initialize available cloud backends"""
+        # Local backend is always available (already registered in CloudOrchestrator)
+        
+        # Try to register Kubernetes backend if available
+        if HAS_KUBERNETES:
+            try:
+                k8s_backend = KubernetesBackend()
+                self.orchestrator.register_backend('k8s', k8s_backend)
+                logger.info("Kubernetes backend registered")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Kubernetes backend: {e}")
+        
+        # SLURM backend
+        if HAS_SLURM:
+            try:
+                slurm_backend = SlurmBackend()
+                self.orchestrator.register_backend('slurm', slurm_backend)
+                logger.info("SLURM backend registered")
+            except Exception as e:
+                logger.warning(f"Failed to initialize SLURM backend: {e}")
+        
+        # S3 artifact store if boto3 available
+        if HAS_BOTO3:
+            # Don't auto-register S3 - requires configuration
+            logger.info("S3 artifact store available (requires configuration)")
+    
+    def run_with_backend(self, job_config: Dict[str, Any], backend: str = 'local', 
+                        store: str = 'local', wait: bool = True) -> Dict[str, Any]:
+        """Run meta-analysis job with specified backend"""
+        try:
+            # Submit job
+            submit_result = self.orchestrator.submit_job(job_config, backend, store)
+            
+            if not submit_result.get('success', False):
+                return submit_result
+            
+            run_id = submit_result['run_id']
+            
+            if not wait:
+                return {
+                    'success': True,
+                    'run_id': run_id,
+                    'status': 'submitted',
+                    'message': f'Job submitted with run ID: {run_id}'
+                }
+            
+            # Wait for completion (simple polling)
+            import time
+            max_wait_time = 600  # 10 minutes
+            poll_interval = 5    # 5 seconds
+            elapsed = 0
+            
+            while elapsed < max_wait_time:
+                status_result = self.orchestrator.check_job_status(run_id)
+                status = status_result.get('status', 'unknown')
+                
+                if status in ['completed', 'failed', 'cancelled']:
+                    break
+                
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+            
+            # Get final results
+            if status == 'completed':
+                results = self.orchestrator.get_job_results(run_id)
+                return {
+                    'success': True,
+                    'run_id': run_id,
+                    'status': 'completed',
+                    'results': results
+                }
+            else:
+                return {
+                    'success': False,
+                    'run_id': run_id,
+                    'status': status,
+                    'error': 'Job did not complete successfully'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Backend execution failed: {str(e)}'
+            }
+    
+    def check_job_status(self, run_id: str) -> Dict[str, Any]:
+        """Check status of a submitted job"""
+        return self.orchestrator.check_job_status(run_id)
+    
+    def get_job_results(self, run_id: str) -> Dict[str, Any]:
+        """Get results from a completed job"""
+        return self.orchestrator.get_job_results(run_id)
+    
+    def cancel_job(self, run_id: str) -> Dict[str, Any]:
+        """Cancel a submitted job"""
+        return self.orchestrator.cancel_job(run_id)
+    
+    def generate_report(self, template_name: str, data: Dict[str, Any], 
+                       output_file: str = None, export_pdf: bool = False) -> Dict[str, Any]:
+        """Generate report using specified template"""
+        try:
+            # Generate HTML report
+            report_result = self.report_generator.generate_report(template_name, data)
+            
+            if not report_result.get('success', False):
+                return report_result
+            
+            html_content = report_result['content']
+            
+            # Save HTML if output file specified
+            if output_file:
+                if not output_file.endswith('.html'):
+                    html_file = output_file + '.html'
+                else:
+                    html_file = output_file
+                
+                save_result = self.report_generator.save_report(html_content, html_file)
+                if not save_result.get('success', False):
+                    return save_result
+                
+                report_result['html_file'] = html_file
+            
+            # Export to PDF if requested
+            if export_pdf and output_file:
+                pdf_file = output_file.replace('.html', '.pdf') if output_file.endswith('.html') else output_file + '.pdf'
+                
+                pdf_result = self.pdf_exporter.export_to_pdf(html_content, pdf_file)
+                if pdf_result.get('success', False):
+                    report_result['pdf_file'] = pdf_file
+                    report_result['pdf_info'] = pdf_result
+                else:
+                    report_result['pdf_error'] = pdf_result.get('error', 'PDF export failed')
+            
+            return report_result
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Report generation failed: {str(e)}'
+            }
+    
+    def list_report_templates(self) -> List[Dict[str, str]]:
+        """List available report templates"""
+        return self.report_generator.list_templates()
+    
+    def configure_artifact_store(self, store_type: str, **kwargs) -> Dict[str, Any]:
+        """Configure a new artifact store"""
+        try:
+            if store_type == 's3':
+                if not HAS_BOTO3:
+                    return {
+                        'success': False,
+                        'error': 'boto3 not available for S3 artifact store'
+                    }
+                
+                store = S3ArtifactStore(
+                    bucket_name=kwargs.get('bucket_name'),
+                    aws_access_key_id=kwargs.get('aws_access_key_id'),
+                    aws_secret_access_key=kwargs.get('aws_secret_access_key'),
+                    region=kwargs.get('region', 'us-east-1')
+                )
+                
+                self.orchestrator.register_artifact_store('s3', store)
+                
+                return {
+                    'success': True,
+                    'message': 'S3 artifact store configured'
+                }
+            
+            elif store_type == 'local':
+                store = LocalArtifactStore(kwargs.get('base_path', './artifacts'))
+                self.orchestrator.register_artifact_store('local_custom', store)
+                
+                return {
+                    'success': True,
+                    'message': 'Local artifact store configured'
+                }
+            
+            else:
+                return {
+                    'success': False,
+                    'error': f'Unknown artifact store type: {store_type}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to configure artifact store: {str(e)}'
+            }
+    
+    def list_available_backends(self) -> Dict[str, Any]:
+        """List all available execution backends"""
+        backends = list(self.orchestrator.backends.keys())
+        stores = list(self.orchestrator.artifact_stores.keys())
+        
+        return {
+            'backends': backends,
+            'artifact_stores': stores,
+            'default_backend': self.orchestrator.default_backend,
+            'default_store': self.orchestrator.default_store
+        }
+    
+    def run_command_line(self, args: List[str]) -> Dict[str, Any]:
+        """Handle command line arguments for Phase 6 functionality"""
+        if not args:
+            return self._show_help()
+        
+        command = args[0]
+        
+        if command == 'run':
+            return self._handle_run_command(args[1:])
+        elif command == 'report':
+            return self._handle_report_command(args[1:])
+        elif command == 'status':
+            return self._handle_status_command(args[1:])
+        elif command == 'cancel':
+            return self._handle_cancel_command(args[1:])
+        elif command == 'backends':
+            return self._handle_backends_command(args[1:])
+        elif command == 'templates':
+            return self._handle_templates_command(args[1:])
+        else:
+            return {
+                'success': False,
+                'error': f'Unknown command: {command}',
+                'help': self._show_help()
+            }
+    
+    def _handle_run_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta run' command"""
+        # Parse arguments
+        backend = 'local'
+        config_file = None
+        wait = True
+        
+        i = 0
+        while i < len(args):
+            if args[i] == '--backend' and i + 1 < len(args):
+                backend = args[i + 1]
+                i += 2
+            elif args[i] == '--config' and i + 1 < len(args):
+                config_file = args[i + 1]
+                i += 2
+            elif args[i] == '--no-wait':
+                wait = False
+                i += 1
+            else:
+                config_file = args[i]
+                i += 1
+        
+        if not config_file:
+            return {
+                'success': False,
+                'error': 'No configuration file specified'
+            }
+        
+        # Load job configuration
+        try:
+            import yaml
+            with open(config_file, 'r') as f:
+                job_config = yaml.safe_load(f)
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to load configuration: {str(e)}'
+            }
+        
+        return self.run_with_backend(job_config, backend, wait=wait)
+    
+    def _handle_report_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta report' command"""
+        template = None
+        data_file = None
+        output_file = None
+        export_pdf = False
+        
+        i = 0
+        while i < len(args):
+            if args[i] == '--template' and i + 1 < len(args):
+                template = args[i + 1]
+                i += 2
+            elif args[i] == '--data' and i + 1 < len(args):
+                data_file = args[i + 1]
+                i += 2
+            elif args[i] == '--output' and i + 1 < len(args):
+                output_file = args[i + 1]
+                i += 2
+            elif args[i] == '--pdf':
+                export_pdf = True
+                i += 1
+            else:
+                data_file = args[i]
+                i += 1
+        
+        if not template:
+            return {
+                'success': False,
+                'error': 'No template specified. Use --template <template_name>'
+            }
+        
+        if not data_file:
+            return {
+                'success': False,
+                'error': 'No data file specified'
+            }
+        
+        # Load data and generate report
+        try:
+            import yaml
+            with open(data_file, 'r') as f:
+                data = yaml.safe_load(f)
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to load data: {str(e)}'
+            }
+        
+        return self.generate_report(template, data, output_file, export_pdf)
+    
+    def _handle_status_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta status' command"""
+        if not args:
+            return {
+                'success': False,
+                'error': 'No run ID specified'
+            }
+        
+        run_id = args[0]
+        return self.check_job_status(run_id)
+    
+    def _handle_cancel_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta cancel' command"""
+        if not args:
+            return {
+                'success': False,
+                'error': 'No run ID specified'
+            }
+        
+        run_id = args[0]
+        return self.cancel_job(run_id)
+    
+    def _handle_backends_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta backends' command"""
+        return {
+            'success': True,
+            'available_backends': self.list_available_backends()
+        }
+    
+    def _handle_templates_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle 'meta templates' command"""
+        return {
+            'success': True,
+            'available_templates': self.list_report_templates()
+        }
+    
+    def _show_help(self) -> Dict[str, Any]:
+        """Show help text for Phase 6 CLI"""
+        help_text = """
+MetaPython Phase 6 CLI Commands:
+
+meta run [--backend BACKEND] [--config CONFIG] [--no-wait] CONFIG_FILE
+    Run meta-analysis with specified backend
+    Backends: local, k8s, slurm, gha
+    
+meta report --template TEMPLATE --data DATA_FILE [--output OUTPUT] [--pdf]
+    Generate report using specified template
+    
+meta status RUN_ID
+    Check status of submitted job
+    
+meta cancel RUN_ID  
+    Cancel submitted job
+    
+meta backends
+    List available execution backends
+    
+meta templates
+    List available report templates
+
+Examples:
+    meta run --backend k8s --config analysis.yaml
+    meta report --template basic --data results.yaml --output report.html --pdf
+    meta status run_abc123def456
+        """
+        
+        return {
+            'success': True,
+            'help': help_text
+        }
         
         if output_opts.get('save_report', True):
             try:
@@ -5906,6 +6346,1741 @@ class AdvancedMultivariateStructures:
             }
 
 # ===================================================================
+# PHASE 6: CLOUD AND DISTRIBUTED RUNNERS
+# ===================================================================
+
+class ExecutionBackend(ABC):
+    """Abstract base class for execution backends"""
+    
+    @abstractmethod
+    def submit_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a job for execution"""
+        pass
+    
+    @abstractmethod
+    def check_status(self, job_id: str) -> Dict[str, Any]:
+        """Check the status of a submitted job"""
+        pass
+    
+    @abstractmethod
+    def get_results(self, job_id: str) -> Dict[str, Any]:
+        """Retrieve results from a completed job"""
+        pass
+    
+    @abstractmethod
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel a running job"""
+        pass
+
+class LocalBackend(ExecutionBackend):
+    """Local execution backend - runs jobs on current machine"""
+    
+    def __init__(self):
+        self.active_jobs = {}
+        self.job_counter = 0
+    
+    def submit_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a job for local execution"""
+        job_id = f"local_{self.job_counter}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.job_counter += 1
+        
+        try:
+            # Execute immediately for local backend
+            if job_config.get('type') == 'meta_analysis':
+                result = self._run_meta_analysis(job_config)
+            elif job_config.get('type') == 'pipeline':
+                result = self._run_pipeline(job_config)
+            else:
+                result = {'success': False, 'error': f"Unknown job type: {job_config.get('type')}"}
+            
+            self.active_jobs[job_id] = {
+                'status': 'completed' if result.get('success', False) else 'failed',
+                'result': result,
+                'submitted_at': datetime.datetime.now(),
+                'completed_at': datetime.datetime.now()
+            }
+            
+            return {
+                'job_id': job_id,
+                'status': 'completed',
+                'backend': 'local',
+                'result': result
+            }
+            
+        except Exception as e:
+            self.active_jobs[job_id] = {
+                'status': 'failed',
+                'error': str(e),
+                'submitted_at': datetime.datetime.now(),
+                'completed_at': datetime.datetime.now()
+            }
+            
+            return {
+                'job_id': job_id,
+                'status': 'failed',
+                'backend': 'local',
+                'error': str(e)
+            }
+    
+    def check_status(self, job_id: str) -> Dict[str, Any]:
+        """Check status of local job"""
+        if job_id not in self.active_jobs:
+            return {'status': 'not_found', 'error': f'Job {job_id} not found'}
+        
+        job_info = self.active_jobs[job_id]
+        return {
+            'job_id': job_id,
+            'status': job_info['status'],
+            'submitted_at': job_info['submitted_at'].isoformat(),
+            'completed_at': job_info.get('completed_at', '').isoformat() if job_info.get('completed_at') else None
+        }
+    
+    def get_results(self, job_id: str) -> Dict[str, Any]:
+        """Get results from completed local job"""
+        if job_id not in self.active_jobs:
+            return {'success': False, 'error': f'Job {job_id} not found'}
+        
+        job_info = self.active_jobs[job_id]
+        if job_info['status'] != 'completed':
+            return {'success': False, 'error': f'Job {job_id} not completed (status: {job_info["status"]})'}
+        
+        return job_info.get('result', {})
+    
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel local job (not applicable since they execute immediately)"""
+        return {'success': True, 'message': 'Local jobs execute immediately and cannot be cancelled'}
+    
+    def _run_meta_analysis(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Run meta-analysis job locally"""
+        try:
+            # Load data
+            data_file = job_config.get('data_file')
+            if not data_file:
+                return {'success': False, 'error': 'No data file specified'}
+            
+            if data_file.endswith('.csv'):
+                data = pd.read_csv(data_file)
+            elif data_file.endswith('.xlsx'):
+                data = pd.read_excel(data_file)
+            else:
+                return {'success': False, 'error': f'Unsupported file format: {data_file}'}
+            
+            # Run analysis
+            meta = UnifiedMetaAnalysis(
+                data=data,
+                effect_col=job_config.get('effect_col', 'effect'),
+                se_col=job_config.get('se_col', 'se'),
+                label_col=job_config.get('label_col', 'study')
+            ).analyze()
+            
+            return {
+                'success': True,
+                'pooled_effect': meta.results.random_effects.effect,
+                'pooled_se': meta.results.random_effects.se,
+                'i2': meta.results.heterogeneity.I2,
+                'meta_analysis': meta
+            }
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def _run_pipeline(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Run pipeline job locally"""
+        try:
+            cli = MetaCLI()
+            pipeline_file = job_config.get('pipeline_file')
+            if not pipeline_file:
+                return {'success': False, 'error': 'No pipeline file specified'}
+            
+            return cli.run_pipeline(pipeline_file)
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+class KubernetesBackend(ExecutionBackend):
+    """Kubernetes execution backend"""
+    
+    def __init__(self, namespace: str = 'default', config_file: Optional[str] = None):
+        if not HAS_KUBERNETES:
+            raise ImportError("kubernetes library required for Kubernetes backend")
+        
+        self.namespace = namespace
+        if config_file:
+            config.load_kube_config(config_file=config_file)
+        else:
+            try:
+                config.load_incluster_config()
+            except config.ConfigException:
+                config.load_kube_config()
+        
+        self.v1 = client.CoreV1Api()
+        self.batch_v1 = client.BatchV1Api()
+    
+    def submit_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit job to Kubernetes"""
+        try:
+            job_name = f"metapython-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{np.random.randint(1000, 9999)}"
+            
+            # Create job manifest
+            job_manifest = {
+                'apiVersion': 'batch/v1',
+                'kind': 'Job',
+                'metadata': {
+                    'name': job_name,
+                    'namespace': self.namespace
+                },
+                'spec': {
+                    'template': {
+                        'spec': {
+                            'containers': [{
+                                'name': 'metapython',
+                                'image': job_config.get('image', 'python:3.9'),
+                                'command': self._build_command(job_config),
+                                'resources': job_config.get('resources', {}),
+                                'env': [{'name': k, 'value': v} for k, v in job_config.get('env', {}).items()]
+                            }],
+                            'restartPolicy': 'Never'
+                        }
+                    },
+                    'backoffLimit': job_config.get('retry_limit', 3)
+                }
+            }
+            
+            # Submit job
+            response = self.batch_v1.create_namespaced_job(
+                namespace=self.namespace,
+                body=job_manifest
+            )
+            
+            return {
+                'job_id': job_name,
+                'status': 'submitted',
+                'backend': 'kubernetes',
+                'namespace': self.namespace
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to submit Kubernetes job: {str(e)}'
+            }
+    
+    def check_status(self, job_id: str) -> Dict[str, Any]:
+        """Check Kubernetes job status"""
+        try:
+            job = self.batch_v1.read_namespaced_job_status(
+                name=job_id,
+                namespace=self.namespace
+            )
+            
+            status = 'running'
+            if job.status.succeeded:
+                status = 'completed'
+            elif job.status.failed:
+                status = 'failed'
+            
+            return {
+                'job_id': job_id,
+                'status': status,
+                'succeeded': job.status.succeeded or 0,
+                'failed': job.status.failed or 0,
+                'active': job.status.active or 0
+            }
+            
+        except Exception as e:
+            return {
+                'job_id': job_id,
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    def get_results(self, job_id: str) -> Dict[str, Any]:
+        """Get results from Kubernetes job"""
+        try:
+            # Get pods for this job
+            pods = self.v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f'job-name={job_id}'
+            )
+            
+            if not pods.items:
+                return {'success': False, 'error': 'No pods found for job'}
+            
+            # Get logs from the first pod
+            pod = pods.items[0]
+            logs = self.v1.read_namespaced_pod_log(
+                name=pod.metadata.name,
+                namespace=self.namespace
+            )
+            
+            return {
+                'success': True,
+                'logs': logs,
+                'pod_name': pod.metadata.name
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to get results: {str(e)}'
+            }
+    
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel Kubernetes job"""
+        try:
+            self.batch_v1.delete_namespaced_job(
+                name=job_id,
+                namespace=self.namespace,
+                body=client.V1DeleteOptions(propagation_policy='Foreground')
+            )
+            
+            return {
+                'success': True,
+                'message': f'Job {job_id} cancelled'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to cancel job: {str(e)}'
+            }
+    
+    def _build_command(self, job_config: Dict[str, Any]) -> List[str]:
+        """Build command for Kubernetes job"""
+        cmd = ['python', '-c']
+        
+        if job_config.get('type') == 'meta_analysis':
+            script = f"""
+import metapython
+result = metapython.quick_meta('{job_config.get('data_file')}')
+print(f'Pooled effect: {{result["pooled_effect"]}}')
+"""
+        else:
+            script = f"""
+import metapython
+cli = metapython.MetaCLI()
+result = cli.run_pipeline('{job_config.get('pipeline_file')}')
+print(f'Pipeline success: {{result["success"]}}')
+"""
+        
+        cmd.append(script)
+        return cmd
+
+class SlurmBackend(ExecutionBackend):
+    """SLURM execution backend"""
+    
+    def __init__(self, partition: Optional[str] = None):
+        if not HAS_SLURM:
+            raise ImportError("SLURM not available on this system")
+        
+        self.partition = partition
+        self.submitted_jobs = {}
+    
+    def submit_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit job to SLURM"""
+        try:
+            job_name = f"metapython_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Create SLURM script
+            script_content = self._create_slurm_script(job_config, job_name)
+            script_file = f"/tmp/{job_name}.sh"
+            
+            with open(script_file, 'w') as f:
+                f.write(script_content)
+            
+            # Submit job
+            cmd = ['sbatch']
+            if self.partition:
+                cmd.extend(['--partition', self.partition])
+            cmd.append(script_file)
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Extract job ID from sbatch output
+                job_id = result.stdout.strip().split()[-1]
+                self.submitted_jobs[job_id] = {
+                    'script_file': script_file,
+                    'submitted_at': datetime.datetime.now()
+                }
+                
+                return {
+                    'job_id': job_id,
+                    'status': 'submitted',
+                    'backend': 'slurm'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'sbatch failed: {result.stderr}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to submit SLURM job: {str(e)}'
+            }
+    
+    def check_status(self, job_id: str) -> Dict[str, Any]:
+        """Check SLURM job status"""
+        try:
+            result = subprocess.run(['squeue', '-j', job_id, '-h', '-o', '%T'], 
+                                  capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                status = result.stdout.strip().lower()
+                # Map SLURM states to our states
+                status_map = {
+                    'pending': 'queued',
+                    'running': 'running',
+                    'completed': 'completed',
+                    'failed': 'failed',
+                    'cancelled': 'cancelled'
+                }
+                
+                return {
+                    'job_id': job_id,
+                    'status': status_map.get(status, status)
+                }
+            else:
+                # Job might be completed and no longer in queue
+                return {
+                    'job_id': job_id,
+                    'status': 'completed_or_failed'
+                }
+                
+        except Exception as e:
+            return {
+                'job_id': job_id,
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    def get_results(self, job_id: str) -> Dict[str, Any]:
+        """Get results from SLURM job"""
+        try:
+            # Look for output files
+            output_file = f"slurm-{job_id}.out"
+            error_file = f"slurm-{job_id}.err"
+            
+            result = {}
+            
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    result['stdout'] = f.read()
+            
+            if os.path.exists(error_file):
+                with open(error_file, 'r') as f:
+                    result['stderr'] = f.read()
+            
+            if not result:
+                return {'success': False, 'error': 'No output files found'}
+            
+            result['success'] = True
+            return result
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to get results: {str(e)}'
+            }
+    
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel SLURM job"""
+        try:
+            result = subprocess.run(['scancel', job_id], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return {
+                    'success': True,
+                    'message': f'Job {job_id} cancelled'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'scancel failed: {result.stderr}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to cancel job: {str(e)}'
+            }
+    
+    def _create_slurm_script(self, job_config: Dict[str, Any], job_name: str) -> str:
+        """Create SLURM batch script"""
+        script = f"""#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
+#SBATCH --time={job_config.get('time_limit', '01:00:00')}
+#SBATCH --ntasks={job_config.get('ntasks', 1)}
+#SBATCH --mem={job_config.get('memory', '4G')}
+
+# Load modules if specified
+"""
+        
+        for module in job_config.get('modules', []):
+            script += f"module load {module}\n"
+        
+        script += "\n# Run metapython job\n"
+        
+        if job_config.get('type') == 'meta_analysis':
+            script += f"""
+python -c "
+import metapython
+result = metapython.quick_meta('{job_config.get('data_file')}')
+print(f'Pooled effect: {{result[\"pooled_effect\"]}}')
+"
+"""
+        else:
+            script += f"""
+python -c "
+import metapython
+cli = metapython.MetaCLI()
+result = cli.run_pipeline('{job_config.get('pipeline_file')}')
+print(f'Pipeline success: {{result[\"success\"]}}')
+"
+"""
+        
+        return script
+
+class GitHubActionsBackend(ExecutionBackend):
+    """GitHub Actions self-hosted runner backend"""
+    
+    def __init__(self, repo_owner: str, repo_name: str, token: str):
+        self.repo_owner = repo_owner
+        self.repo_name = repo_name
+        self.token = token
+        self.submitted_workflows = {}
+    
+    def submit_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit job to GitHub Actions (workflow dispatch)"""
+        try:
+            import requests
+            
+            workflow_file = job_config.get('workflow_file', 'metapython.yml')
+            
+            url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/actions/workflows/{workflow_file}/dispatches"
+            
+            headers = {
+                'Authorization': f'token {self.token}',
+                'Accept': 'application/vnd.github.v3+json'
+            }
+            
+            data = {
+                'ref': job_config.get('ref', 'main'),
+                'inputs': job_config.get('inputs', {})
+            }
+            
+            response = requests.post(url, headers=headers, json=data)
+            
+            if response.status_code == 204:
+                job_id = f"gha_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                self.submitted_workflows[job_id] = {
+                    'workflow_file': workflow_file,
+                    'submitted_at': datetime.datetime.now()
+                }
+                
+                return {
+                    'job_id': job_id,
+                    'status': 'submitted',
+                    'backend': 'github_actions'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'GitHub API error: {response.text}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to submit GitHub Actions job: {str(e)}'
+            }
+    
+    def check_status(self, job_id: str) -> Dict[str, Any]:
+        """Check GitHub Actions workflow status"""
+        # Note: This is simplified - in practice would need to track workflow run IDs
+        return {
+            'job_id': job_id,
+            'status': 'running',
+            'message': 'Check GitHub Actions tab for detailed status'
+        }
+    
+    def get_results(self, job_id: str) -> Dict[str, Any]:
+        """Get results from GitHub Actions workflow"""
+        return {
+            'success': True,
+            'message': 'Check GitHub Actions artifacts for results'
+        }
+    
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel GitHub Actions workflow"""
+        return {
+            'success': False,
+            'error': 'Cancellation must be done through GitHub UI'
+        }
+
+class ArtifactStore(ABC):
+    """Abstract base class for artifact storage"""
+    
+    @abstractmethod
+    def upload(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """Upload file to artifact store"""
+        pass
+    
+    @abstractmethod
+    def download(self, remote_path: str, local_path: str) -> Dict[str, Any]:
+        """Download file from artifact store"""
+        pass
+    
+    @abstractmethod
+    def list_artifacts(self, prefix: str = '') -> Dict[str, Any]:
+        """List artifacts in store"""
+        pass
+    
+    @abstractmethod
+    def delete(self, remote_path: str) -> Dict[str, Any]:
+        """Delete artifact from store"""
+        pass
+    
+    @abstractmethod
+    def get_signed_url(self, remote_path: str, expires_in: int = 3600) -> Dict[str, Any]:
+        """Get signed URL for artifact access"""
+        pass
+
+class LocalArtifactStore(ArtifactStore):
+    """Local filesystem artifact store"""
+    
+    def __init__(self, base_path: str = './artifacts'):
+        self.base_path = base_path
+        os.makedirs(base_path, exist_ok=True)
+    
+    def upload(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """Upload file to local store"""
+        try:
+            dest_path = os.path.join(self.base_path, remote_path)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            
+            import shutil
+            shutil.copy2(local_path, dest_path)
+            
+            return {
+                'success': True,
+                'remote_path': remote_path,
+                'local_path': dest_path,
+                'size': os.path.getsize(dest_path)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def download(self, remote_path: str, local_path: str) -> Dict[str, Any]:
+        """Download file from local store"""
+        try:
+            src_path = os.path.join(self.base_path, remote_path)
+            if not os.path.exists(src_path):
+                return {
+                    'success': False,
+                    'error': f'Artifact not found: {remote_path}'
+                }
+            
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            import shutil
+            shutil.copy2(src_path, local_path)
+            
+            return {
+                'success': True,
+                'remote_path': remote_path,
+                'local_path': local_path,
+                'size': os.path.getsize(local_path)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def list_artifacts(self, prefix: str = '') -> Dict[str, Any]:
+        """List artifacts in local store"""
+        try:
+            artifacts = []
+            search_path = os.path.join(self.base_path, prefix)
+            
+            if os.path.exists(search_path):
+                for root, dirs, files in os.walk(search_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(file_path, self.base_path)
+                        artifacts.append({
+                            'path': rel_path,
+                            'size': os.path.getsize(file_path),
+                            'modified': datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+                        })
+            
+            return {
+                'success': True,
+                'artifacts': artifacts,
+                'count': len(artifacts)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def delete(self, remote_path: str) -> Dict[str, Any]:
+        """Delete artifact from local store"""
+        try:
+            file_path = os.path.join(self.base_path, remote_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                return {
+                    'success': True,
+                    'message': f'Deleted {remote_path}'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'Artifact not found: {remote_path}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def get_signed_url(self, remote_path: str, expires_in: int = 3600) -> Dict[str, Any]:
+        """Get signed URL for local artifact (returns file path)"""
+        file_path = os.path.join(self.base_path, remote_path)
+        if os.path.exists(file_path):
+            return {
+                'success': True,
+                'url': f'file://{os.path.abspath(file_path)}',
+                'expires_in': expires_in
+            }
+        else:
+            return {
+                'success': False,
+                'error': f'Artifact not found: {remote_path}'
+            }
+
+class S3ArtifactStore(ArtifactStore):
+    """AWS S3 artifact store"""
+    
+    def __init__(self, bucket_name: str, aws_access_key_id: Optional[str] = None, 
+                 aws_secret_access_key: Optional[str] = None, region: str = 'us-east-1'):
+        if not HAS_BOTO3:
+            raise ImportError("boto3 required for S3 artifact store")
+        
+        self.bucket_name = bucket_name
+        
+        if aws_access_key_id and aws_secret_access_key:
+            self.s3 = boto3.client(
+                's3',
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key,
+                region_name=region
+            )
+        else:
+            # Use default credentials (IAM role, environment variables, etc.)
+            self.s3 = boto3.client('s3', region_name=region)
+    
+    def upload(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """Upload file to S3"""
+        try:
+            self.s3.upload_file(local_path, self.bucket_name, remote_path)
+            
+            # Get file size
+            response = self.s3.head_object(Bucket=self.bucket_name, Key=remote_path)
+            
+            return {
+                'success': True,
+                'remote_path': remote_path,
+                'bucket': self.bucket_name,
+                'size': response['ContentLength'],
+                'etag': response['ETag']
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def download(self, remote_path: str, local_path: str) -> Dict[str, Any]:
+        """Download file from S3"""
+        try:
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            self.s3.download_file(self.bucket_name, remote_path, local_path)
+            
+            return {
+                'success': True,
+                'remote_path': remote_path,
+                'local_path': local_path,
+                'size': os.path.getsize(local_path)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def list_artifacts(self, prefix: str = '') -> Dict[str, Any]:
+        """List artifacts in S3 bucket"""
+        try:
+            response = self.s3.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix
+            )
+            
+            artifacts = []
+            for obj in response.get('Contents', []):
+                artifacts.append({
+                    'path': obj['Key'],
+                    'size': obj['Size'],
+                    'modified': obj['LastModified'].isoformat(),
+                    'etag': obj['ETag']
+                })
+            
+            return {
+                'success': True,
+                'artifacts': artifacts,
+                'count': len(artifacts)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def delete(self, remote_path: str) -> Dict[str, Any]:
+        """Delete artifact from S3"""
+        try:
+            self.s3.delete_object(Bucket=self.bucket_name, Key=remote_path)
+            
+            return {
+                'success': True,
+                'message': f'Deleted {remote_path} from S3'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def get_signed_url(self, remote_path: str, expires_in: int = 3600) -> Dict[str, Any]:
+        """Get signed URL for S3 object"""
+        try:
+            url = self.s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket_name, 'Key': remote_path},
+                ExpiresIn=expires_in
+            )
+            
+            return {
+                'success': True,
+                'url': url,
+                'expires_in': expires_in
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+class CloudOrchestrator:
+    """Orchestrates meta-analysis jobs across different backends"""
+    
+    def __init__(self):
+        self.backends = {
+            'local': LocalBackend(),
+        }
+        self.artifact_stores = {
+            'local': LocalArtifactStore()
+        }
+        self.job_queue = []
+        self.active_jobs = {}
+        self.default_backend = 'local'
+        self.default_store = 'local'
+    
+    def register_backend(self, name: str, backend: ExecutionBackend):
+        """Register a new execution backend"""
+        self.backends[name] = backend
+    
+    def register_artifact_store(self, name: str, store: ArtifactStore):
+        """Register a new artifact store"""
+        self.artifact_stores[name] = store
+    
+    def submit_job(self, job_config: Dict[str, Any], backend: str = None, 
+                   store: str = None, retry_limit: int = 3) -> Dict[str, Any]:
+        """Submit job with automatic retry and queueing"""
+        backend = backend or self.default_backend
+        store = store or self.default_store
+        
+        if backend not in self.backends:
+            return {
+                'success': False,
+                'error': f'Backend "{backend}" not available'
+            }
+        
+        if store not in self.artifact_stores:
+            return {
+                'success': False,
+                'error': f'Artifact store "{store}" not available'
+            }
+        
+        # Generate idempotent run ID
+        run_id = self._generate_run_id(job_config)
+        
+        # Check if this job already exists
+        if run_id in self.active_jobs:
+            return {
+                'success': True,
+                'run_id': run_id,
+                'status': 'already_exists',
+                'job_id': self.active_jobs[run_id]['job_id']
+            }
+        
+        try:
+            # Submit to backend
+            result = self.backends[backend].submit_job(job_config)
+            
+            if result.get('success', True):  # Assume success if not specified
+                self.active_jobs[run_id] = {
+                    'job_id': result['job_id'],
+                    'backend': backend,
+                    'store': store,
+                    'retry_count': 0,
+                    'retry_limit': retry_limit,
+                    'submitted_at': datetime.datetime.now(),
+                    'job_config': job_config
+                }
+                
+                return {
+                    'success': True,
+                    'run_id': run_id,
+                    'job_id': result['job_id'],
+                    'backend': backend,
+                    'status': result.get('status', 'submitted')
+                }
+            else:
+                return result
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to submit job: {str(e)}'
+            }
+    
+    def check_job_status(self, run_id: str) -> Dict[str, Any]:
+        """Check status of job by run ID"""
+        if run_id not in self.active_jobs:
+            return {
+                'success': False,
+                'error': f'Job {run_id} not found'
+            }
+        
+        job_info = self.active_jobs[run_id]
+        backend = self.backends[job_info['backend']]
+        
+        try:
+            status = backend.check_status(job_info['job_id'])
+            
+            # Handle retries for failed jobs
+            if status.get('status') == 'failed' and job_info['retry_count'] < job_info['retry_limit']:
+                logger.info(f"Retrying failed job {run_id} (attempt {job_info['retry_count'] + 1})")
+                retry_result = self._retry_job(run_id)
+                if retry_result.get('success'):
+                    status['status'] = 'retrying'
+            
+            return status
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to check job status: {str(e)}'
+            }
+    
+    def get_job_results(self, run_id: str) -> Dict[str, Any]:
+        """Get results for completed job"""
+        if run_id not in self.active_jobs:
+            return {
+                'success': False,
+                'error': f'Job {run_id} not found'
+            }
+        
+        job_info = self.active_jobs[run_id]
+        backend = self.backends[job_info['backend']]
+        
+        try:
+            return backend.get_results(job_info['job_id'])
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to get job results: {str(e)}'
+            }
+    
+    def cancel_job(self, run_id: str) -> Dict[str, Any]:
+        """Cancel job by run ID"""
+        if run_id not in self.active_jobs:
+            return {
+                'success': False,
+                'error': f'Job {run_id} not found'
+            }
+        
+        job_info = self.active_jobs[run_id]
+        backend = self.backends[job_info['backend']]
+        
+        try:
+            result = backend.cancel_job(job_info['job_id'])
+            if result.get('success'):
+                del self.active_jobs[run_id]
+            return result
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to cancel job: {str(e)}'
+            }
+    
+    def _generate_run_id(self, job_config: Dict[str, Any]) -> str:
+        """Generate idempotent run ID based on job configuration"""
+        import hashlib
+        import json
+        
+        # Create deterministic hash of job configuration
+        config_str = json.dumps(job_config, sort_keys=True)
+        hash_obj = hashlib.md5(config_str.encode())
+        return f"run_{hash_obj.hexdigest()[:16]}"
+    
+    def _retry_job(self, run_id: str) -> Dict[str, Any]:
+        """Retry a failed job"""
+        job_info = self.active_jobs[run_id]
+        job_info['retry_count'] += 1
+        
+        backend = self.backends[job_info['backend']]
+        
+        try:
+            result = backend.submit_job(job_info['job_config'])
+            if result.get('success', True):
+                job_info['job_id'] = result['job_id']
+                job_info['retried_at'] = datetime.datetime.now()
+                return {'success': True}
+            else:
+                return result
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to retry job: {str(e)}'
+            }
+
+# ===================================================================
+# PHASE 6: REPORTING AND TEMPLATING SYSTEM
+# ===================================================================
+
+class ReportTemplate:
+    """Base class for report templates"""
+    
+    def __init__(self, name: str, description: str = ""):
+        self.name = name
+        self.description = description
+    
+    def render(self, data: Dict[str, Any], output_format: str = 'html') -> str:
+        """Render template with data"""
+        raise NotImplementedError("Subclasses must implement render method")
+
+class Jinja2ReportTemplate(ReportTemplate):
+    """Jinja2-based report template"""
+    
+    def __init__(self, name: str, template_content: str, description: str = ""):
+        super().__init__(name, description)
+        self.template_content = template_content
+        
+        try:
+            from jinja2 import Template
+            self.template = Template(template_content)
+            self.available = True
+        except ImportError:
+            self.template = None
+            self.available = False
+            logger.warning("Jinja2 not available - template rendering disabled")
+    
+    def render(self, data: Dict[str, Any], output_format: str = 'html') -> str:
+        """Render Jinja2 template with data"""
+        if not self.available:
+            return f"<p>Template rendering unavailable (Jinja2 not installed)</p>"
+        
+        try:
+            return self.template.render(**data, output_format=output_format)
+        except Exception as e:
+            return f"<p>Template rendering error: {str(e)}</p>"
+
+class ReportGenerator:
+    """Generate reports from meta-analysis results"""
+    
+    def __init__(self):
+        self.templates = {}
+        self._initialize_builtin_templates()
+    
+    def _initialize_builtin_templates(self):
+        """Initialize built-in report templates"""
+        
+        # Basic meta-analysis template
+        basic_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meta-Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { border-bottom: 2px solid #ccc; padding-bottom: 10px; }
+        .section { margin: 20px 0; }
+        .result { background: #f5f5f5; padding: 15px; border-radius: 5px; }
+        .forest-plot { text-align: center; margin: 20px 0; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .highlight { background-color: #ffffcc; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Meta-Analysis Report</h1>
+        <p>Generated on: {{ generated_at }}</p>
+    </div>
+    
+    <div class="section">
+        <h2>Study Characteristics</h2>
+        <p><strong>Number of studies:</strong> {{ n_studies }}</p>
+        <p><strong>Analysis type:</strong> {{ analysis_type }}</p>
+    </div>
+    
+    {% if pooled_effect %}
+    <div class="section">
+        <h2>Pooled Effect Estimates</h2>
+        <div class="result">
+            <h3>Random Effects Model</h3>
+            <p><strong>Pooled Effect:</strong> {{ "%.3f"|format(pooled_effect.effect) }} 
+               (95% CI: {{ "%.3f"|format(pooled_effect.ci_lower) }} to {{ "%.3f"|format(pooled_effect.ci_upper) }})</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(pooled_effect.p_value) }}</p>
+            <p><strong>Standard Error:</strong> {{ "%.3f"|format(pooled_effect.se) }}</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if heterogeneity %}
+    <div class="section">
+        <h2>Heterogeneity Assessment</h2>
+        <div class="result">
+            <p><strong>I² statistic:</strong> {{ "%.1f"|format(heterogeneity.I2) }}%</p>
+            <p><strong>Tau²:</strong> {{ "%.4f"|format(heterogeneity.tau2) }}</p>
+            <p><strong>Q statistic:</strong> {{ "%.2f"|format(heterogeneity.Q) }} (df={{ heterogeneity.df }}, p={{ "%.4f"|format(heterogeneity.Q_p) }})</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if bias_tests %}
+    <div class="section">
+        <h2>Publication Bias Assessment</h2>
+        <div class="result">
+            <h3>Egger's Test</h3>
+            <p><strong>Intercept:</strong> {{ "%.3f"|format(bias_tests.egger.intercept) }}</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(bias_tests.egger.p_value) }}</p>
+            
+            <h3>Begg's Test</h3>
+            <p><strong>Tau:</strong> {{ "%.3f"|format(bias_tests.begg.tau) }}</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(bias_tests.begg.p_value) }}</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if individual_studies %}
+    <div class="section">
+        <h2>Individual Study Results</h2>
+        <table>
+            <tr>
+                <th>Study</th>
+                <th>Effect Size</th>
+                <th>SE</th>
+                <th>95% CI</th>
+                <th>Weight (%)</th>
+            </tr>
+            {% for study in individual_studies %}
+            <tr>
+                <td>{{ study.label }}</td>
+                <td>{{ "%.3f"|format(study.effect) }}</td>
+                <td>{{ "%.3f"|format(study.se) }}</td>
+                <td>{{ "%.3f"|format(study.ci_lower) }} to {{ "%.3f"|format(study.ci_upper) }}</td>
+                <td>{{ "%.1f"|format(study.weight) }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+    
+    <div class="section">
+        <h2>Method Information</h2>
+        <p><strong>Tau² estimation method:</strong> {{ tau2_method }}</p>
+        <p><strong>Confidence interval method:</strong> {{ ci_method }}</p>
+        {% if heterogeneity_correction %}
+        <p><strong>Heterogeneity correction:</strong> {{ heterogeneity_correction }}</p>
+        {% endif %}
+    </div>
+</body>
+</html>
+        """
+        
+        self.templates['basic'] = Jinja2ReportTemplate(
+            'basic', 
+            basic_template,
+            'Basic meta-analysis report with effect sizes and heterogeneity'
+        )
+        
+        # Network meta-analysis template
+        nma_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Network Meta-Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { border-bottom: 2px solid #ccc; padding-bottom: 10px; }
+        .section { margin: 20px 0; }
+        .result { background: #f5f5f5; padding: 15px; border-radius: 5px; }
+        .warning { background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 5px; }
+        .error { background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; border-radius: 5px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Network Meta-Analysis Report</h1>
+        <p>Generated on: {{ generated_at }}</p>
+    </div>
+    
+    <div class="section">
+        <h2>Network Characteristics</h2>
+        <p><strong>Number of treatments:</strong> {{ n_treatments }}</p>
+        <p><strong>Number of comparisons:</strong> {{ n_comparisons }}</p>
+        <p><strong>Network connectivity:</strong> {{ network_connectivity }}</p>
+    </div>
+    
+    {% if inconsistency_tests %}
+    <div class="section">
+        <h2>Inconsistency Assessment</h2>
+        
+        {% if inconsistency_tests.global_test %}
+        <div class="result">
+            <h3>Global Inconsistency (Design-by-Treatment)</h3>
+            <p><strong>Chi-square statistic:</strong> {{ "%.3f"|format(inconsistency_tests.global_test.chi2) }}</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(inconsistency_tests.global_test.p_value) }}</p>
+            {% if inconsistency_tests.global_test.p_value < 0.05 %}
+            <div class="warning">
+                <strong>Warning:</strong> Significant global inconsistency detected (p < 0.05)
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% if inconsistency_tests.local_tests %}
+        <div class="result">
+            <h3>Local Inconsistency (Node-Splitting)</h3>
+            <table>
+                <tr>
+                    <th>Comparison</th>
+                    <th>Direct Evidence</th>
+                    <th>Indirect Evidence</th>
+                    <th>Difference</th>
+                    <th>P-value</th>
+                </tr>
+                {% for test in inconsistency_tests.local_tests %}
+                <tr {% if test.p_value < 0.05 %}class="warning"{% endif %}>
+                    <td>{{ test.comparison }}</td>
+                    <td>{{ "%.3f"|format(test.direct) }}</td>
+                    <td>{{ "%.3f"|format(test.indirect) }}</td>
+                    <td>{{ "%.3f"|format(test.difference) }}</td>
+                    <td>{{ "%.4f"|format(test.p_value) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    {% if treatment_rankings %}
+    <div class="section">
+        <h2>Treatment Rankings</h2>
+        <div class="result">
+            <table>
+                <tr>
+                    <th>Rank</th>
+                    <th>Treatment</th>
+                    <th>SUCRA</th>
+                    <th>Mean Rank</th>
+                    <th>95% CI</th>
+                </tr>
+                {% for ranking in treatment_rankings %}
+                <tr>
+                    <td>{{ ranking.rank }}</td>
+                    <td>{{ ranking.treatment }}</td>
+                    <td>{{ "%.1f"|format(ranking.sucra) }}%</td>
+                    <td>{{ "%.2f"|format(ranking.mean_rank) }}</td>
+                    <td>{{ "%.3f"|format(ranking.ci_lower) }} to {{ "%.3f"|format(ranking.ci_upper) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if pairwise_comparisons %}
+    <div class="section">
+        <h2>Pairwise Comparisons</h2>
+        <div class="result">
+            <table>
+                <tr>
+                    <th>Comparison</th>
+                    <th>Effect Size</th>
+                    <th>95% CI</th>
+                    <th>P-value</th>
+                </tr>
+                {% for comp in pairwise_comparisons %}
+                <tr>
+                    <td>{{ comp.comparison }}</td>
+                    <td>{{ "%.3f"|format(comp.effect) }}</td>
+                    <td>{{ "%.3f"|format(comp.ci_lower) }} to {{ "%.3f"|format(comp.ci_upper) }}</td>
+                    <td>{{ "%.4f"|format(comp.p_value) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</body>
+</html>
+        """
+        
+        self.templates['network'] = Jinja2ReportTemplate(
+            'network',
+            nma_template,
+            'Network meta-analysis report with inconsistency testing and rankings'
+        )
+        
+        # Diagnostic Test Accuracy template
+        dta_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Diagnostic Test Accuracy Meta-Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { border-bottom: 2px solid #ccc; padding-bottom: 10px; }
+        .section { margin: 20px 0; }
+        .result { background: #f5f5f5; padding: 15px; border-radius: 5px; }
+        .nomogram { background: #e8f4f8; padding: 15px; border-radius: 5px; font-family: monospace; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Diagnostic Test Accuracy Meta-Analysis Report</h1>
+        <p>Generated on: {{ generated_at }}</p>
+    </div>
+    
+    <div class="section">
+        <h2>Study Characteristics</h2>
+        <p><strong>Number of studies:</strong> {{ n_studies }}</p>
+        <p><strong>Total patients:</strong> {{ total_patients }}</p>
+    </div>
+    
+    {% if summary_estimates %}
+    <div class="section">
+        <h2>Summary Performance Estimates</h2>
+        <div class="result">
+            <h3>HSROC Model Results</h3>
+            <p><strong>Summary Sensitivity:</strong> {{ "%.3f"|format(summary_estimates.sensitivity) }} 
+               (95% CI: {{ "%.3f"|format(summary_estimates.sens_ci_lower) }} to {{ "%.3f"|format(summary_estimates.sens_ci_upper) }})</p>
+            <p><strong>Summary Specificity:</strong> {{ "%.3f"|format(summary_estimates.specificity) }} 
+               (95% CI: {{ "%.3f"|format(summary_estimates.spec_ci_lower) }} to {{ "%.3f"|format(summary_estimates.spec_ci_upper) }})</p>
+            <p><strong>Positive Likelihood Ratio:</strong> {{ "%.2f"|format(summary_estimates.plr) }}</p>
+            <p><strong>Negative Likelihood Ratio:</strong> {{ "%.2f"|format(summary_estimates.nlr) }}</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if fagan_nomogram %}
+    <div class="section">
+        <h2>Clinical Interpretation (Fagan Nomogram)</h2>
+        <div class="nomogram">
+            <h3>Fagan Nomogram Results</h3>
+            <pre>{{ fagan_nomogram.text_nomogram }}</pre>
+            <p><strong>Pre-test probability:</strong> {{ "%.1f"|format(fagan_nomogram.pre_test_prob * 100) }}%</p>
+            <p><strong>Post-test probability (positive):</strong> {{ "%.1f"|format(fagan_nomogram.post_test_prob_pos * 100) }}%</p>
+            <p><strong>Post-test probability (negative):</strong> {{ "%.1f"|format(fagan_nomogram.post_test_prob_neg * 100) }}%</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if individual_studies %}
+    <div class="section">
+        <h2>Individual Study Results</h2>
+        <table>
+            <tr>
+                <th>Study</th>
+                <th>TP</th>
+                <th>FN</th>
+                <th>FP</th>
+                <th>TN</th>
+                <th>Sensitivity</th>
+                <th>Specificity</th>
+                <th>PLR</th>
+                <th>NLR</th>
+            </tr>
+            {% for study in individual_studies %}
+            <tr>
+                <td>{{ study.label }}</td>
+                <td>{{ study.tp }}</td>
+                <td>{{ study.fn }}</td>
+                <td>{{ study.fp }}</td>
+                <td>{{ study.tn }}</td>
+                <td>{{ "%.3f"|format(study.sensitivity) }}</td>
+                <td>{{ "%.3f"|format(study.specificity) }}</td>
+                <td>{{ "%.2f"|format(study.plr) }}</td>
+                <td>{{ "%.2f"|format(study.nlr) }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+    
+    {% if heterogeneity %}
+    <div class="section">
+        <h2>Between-Study Heterogeneity</h2>
+        <div class="result">
+            <p><strong>Tau² (sensitivity):</strong> {{ "%.4f"|format(heterogeneity.tau2_sens) }}</p>
+            <p><strong>Tau² (specificity):</strong> {{ "%.4f"|format(heterogeneity.tau2_spec) }}</p>
+            <p><strong>Correlation:</strong> {{ "%.3f"|format(heterogeneity.correlation) }}</p>
+        </div>
+    </div>
+    {% endif %}
+</body>
+</html>
+        """
+        
+        self.templates['diagnostic'] = Jinja2ReportTemplate(
+            'diagnostic',
+            dta_template,
+            'Diagnostic test accuracy meta-analysis with HSROC and Fagan nomogram'
+        )
+        
+        # Sparse events template
+        sparse_events_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sparse Events Meta-Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { border-bottom: 2px solid #ccc; padding-bottom: 10px; }
+        .section { margin: 20px 0; }
+        .result { background: #f5f5f5; padding: 15px; border-radius: 5px; }
+        .recommendation { background: #e8f4f8; padding: 15px; border-radius: 5px; border-left: 4px solid #17a2b8; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Sparse Events Meta-Analysis Report</h1>
+        <p>Generated on: {{ generated_at }}</p>
+    </div>
+    
+    <div class="section">
+        <h2>Event Analysis Characteristics</h2>
+        <p><strong>Number of studies:</strong> {{ n_studies }}</p>
+        <p><strong>Total events (treatment):</strong> {{ total_events_treatment }}</p>
+        <p><strong>Total events (control):</strong> {{ total_events_control }}</p>
+        <p><strong>Studies with zero events:</strong> {{ zero_event_studies }}</p>
+    </div>
+    
+    {% if method_guidance %}
+    <div class="section">
+        <h2>Method Recommendation</h2>
+        <div class="recommendation">
+            <h3>Recommended Method: {{ method_guidance.recommended_method }}</h3>
+            <p><strong>Reason:</strong> {{ method_guidance.reason }}</p>
+            {% if method_guidance.warnings %}
+            <p><strong>Warnings:</strong></p>
+            <ul>
+                {% for warning in method_guidance.warnings %}
+                <li>{{ warning }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if peto_results %}
+    <div class="section">
+        <h2>Peto Odds Ratio Results</h2>
+        <div class="result">
+            <p><strong>Peto OR:</strong> {{ "%.3f"|format(peto_results.peto_or) }} 
+               (95% CI: {{ "%.3f"|format(peto_results.ci_lower) }} to {{ "%.3f"|format(peto_results.ci_upper) }})</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(peto_results.p_value) }}</p>
+            <p><strong>Log OR:</strong> {{ "%.3f"|format(peto_results.log_or) }}</p>
+            <p><strong>Standard Error:</strong> {{ "%.3f"|format(peto_results.se_log_or) }}</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if mantel_haenszel_results %}
+    <div class="section">
+        <h2>Mantel-Haenszel Results</h2>
+        <div class="result">
+            <p><strong>MH OR:</strong> {{ "%.3f"|format(mantel_haenszel_results.mh_or) }} 
+               (95% CI: {{ "%.3f"|format(mantel_haenszel_results.ci_lower) }} to {{ "%.3f"|format(mantel_haenszel_results.ci_upper) }})</p>
+            <p><strong>P-value:</strong> {{ "%.4f"|format(mantel_haenszel_results.p_value) }}</p>
+            <p><strong>Continuity correction:</strong> {{ mantel_haenszel_results.correction_method }}</p>
+        </div>
+    </div>
+    {% endif %}
+    
+    {% if individual_studies %}
+    <div class="section">
+        <h2>Individual Study Results</h2>
+        <table>
+            <tr>
+                <th>Study</th>
+                <th>T Events</th>
+                <th>T Total</th>
+                <th>C Events</th>
+                <th>C Total</th>
+                <th>OR (Individual)</th>
+                <th>95% CI</th>
+            </tr>
+            {% for study in individual_studies %}
+            <tr>
+                <td>{{ study.label }}</td>
+                <td>{{ study.t_events }}</td>
+                <td>{{ study.t_total }}</td>
+                <td>{{ study.c_events }}</td>
+                <td>{{ study.c_total }}</td>
+                <td>{{ "%.3f"|format(study.or) if study.or else "N/A" }}</td>
+                <td>{{ "%.3f"|format(study.ci_lower) if study.ci_lower else "N/A" }} to {{ "%.3f"|format(study.ci_upper) if study.ci_upper else "N/A" }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+</body>
+</html>
+        """
+        
+        self.templates['sparse_events'] = Jinja2ReportTemplate(
+            'sparse_events',
+            sparse_events_template,
+            'Sparse events meta-analysis with Peto OR and Mantel-Haenszel methods'
+        )
+    
+    def add_template(self, name: str, template: ReportTemplate):
+        """Add a custom template"""
+        self.templates[name] = template
+    
+    def list_templates(self) -> List[Dict[str, str]]:
+        """List available templates"""
+        return [
+            {
+                'name': name,
+                'description': template.description
+            }
+            for name, template in self.templates.items()
+        ]
+    
+    def generate_report(self, template_name: str, data: Dict[str, Any], 
+                       output_format: str = 'html') -> Dict[str, Any]:
+        """Generate report using specified template"""
+        if template_name not in self.templates:
+            return {
+                'success': False,
+                'error': f'Template "{template_name}" not found'
+            }
+        
+        try:
+            # Add metadata
+            data['generated_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            template = self.templates[template_name]
+            content = template.render(data, output_format)
+            
+            return {
+                'success': True,
+                'content': content,
+                'template_name': template_name,
+                'output_format': output_format
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Report generation failed: {str(e)}'
+            }
+    
+    def save_report(self, content: str, filename: str, output_format: str = 'html') -> Dict[str, Any]:
+        """Save report to file"""
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            return {
+                'success': True,
+                'filename': filename,
+                'size': len(content.encode('utf-8'))
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to save report: {str(e)}'
+            }
+
+class PDFExporter:
+    """Export reports to PDF using available libraries"""
+    
+    def __init__(self):
+        self.available_exporters = []
+        
+        if HAS_WEASYPRINT:
+            self.available_exporters.append('weasyprint')
+        
+        if HAS_WKHTMLTOPDF:
+            self.available_exporters.append('wkhtmltopdf')
+    
+    def export_to_pdf(self, html_content: str, output_file: str, 
+                     method: str = 'auto') -> Dict[str, Any]:
+        """Export HTML content to PDF"""
+        if not self.available_exporters:
+            return {
+                'success': False,
+                'error': 'No PDF export libraries available. Install WeasyPrint or wkhtmltopdf'
+            }
+        
+        if method == 'auto':
+            method = self.available_exporters[0]
+        
+        if method not in self.available_exporters:
+            return {
+                'success': False,
+                'error': f'PDF export method "{method}" not available'
+            }
+        
+        try:
+            if method == 'weasyprint':
+                return self._export_weasyprint(html_content, output_file)
+            elif method == 'wkhtmltopdf':
+                return self._export_wkhtmltopdf(html_content, output_file)
+            else:
+                return {
+                    'success': False,
+                    'error': f'Unknown export method: {method}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'PDF export failed: {str(e)}'
+            }
+    
+    def _export_weasyprint(self, html_content: str, output_file: str) -> Dict[str, Any]:
+        """Export using WeasyPrint"""
+        try:
+            import weasyprint
+            
+            # Add basic CSS for better PDF rendering
+            css_content = """
+            @page {
+                margin: 2cm;
+                size: A4;
+            }
+            body {
+                font-family: Arial, sans-serif;
+                line-height: 1.4;
+            }
+            table {
+                page-break-inside: avoid;
+            }
+            .section {
+                page-break-inside: avoid;
+            }
+            """
+            
+            html_doc = weasyprint.HTML(string=html_content)
+            css_doc = weasyprint.CSS(string=css_content)
+            
+            html_doc.write_pdf(output_file, stylesheets=[css_doc])
+            
+            return {
+                'success': True,
+                'output_file': output_file,
+                'method': 'weasyprint',
+                'size': os.path.getsize(output_file)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'WeasyPrint export failed: {str(e)}'
+            }
+    
+    def _export_wkhtmltopdf(self, html_content: str, output_file: str) -> Dict[str, Any]:
+        """Export using wkhtmltopdf"""
+        try:
+            import pdfkit
+            
+            options = {
+                'page-size': 'A4',
+                'margin-top': '0.75in',
+                'margin-right': '0.75in',
+                'margin-bottom': '0.75in',
+                'margin-left': '0.75in',
+                'encoding': "UTF-8",
+                'no-outline': None
+            }
+            
+            pdfkit.from_string(html_content, output_file, options=options)
+            
+            return {
+                'success': True,
+                'output_file': output_file,
+                'method': 'wkhtmltopdf',
+                'size': os.path.getsize(output_file)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'wkhtmltopdf export failed: {str(e)}'
+            }
+
+# ===================================================================
 # VERSION INFORMATION
 # ===================================================================
 
@@ -5933,7 +8108,93 @@ __all__ = [
     'SparseEventMethods',
     'MetaCLI',
     'AdvancedMultivariateStructures',
+    # Phase 6: Cloud and distributed runners
+    'ExecutionBackend',
+    'LocalBackend',
+    'KubernetesBackend',
+    'SlurmBackend',
+    'GitHubActionsBackend',
+    'ArtifactStore',
+    'LocalArtifactStore',
+    'S3ArtifactStore',
+    'CloudOrchestrator',
+    # Phase 6: Reporting and templating
+    'ReportTemplate',
+    'Jinja2ReportTemplate',
+    'ReportGenerator',
+    'PDFExporter',
+    # Utility functions
     'quick_meta',
     'meta_from_summary_stats',
     'run_unified_demo'
 ]
+
+# ===================================================================
+# MAIN EXECUTION (Phase 6)
+# ===================================================================
+
+if __name__ == '__main__':
+    import sys
+    
+    # Phase 6: Enhanced CLI with command support
+    if len(sys.argv) > 1:
+        cli = MetaCLI()
+        result = cli.run_command_line(sys.argv[1:])
+        
+        if result.get('success', False):
+            if 'help' in result:
+                print(result['help'])
+            elif 'available_backends' in result:
+                backends = result['available_backends']
+                print("Available backends:", backends['backends'])
+                print("Available artifact stores:", backends['artifact_stores'])
+                print("Default backend:", backends['default_backend'])
+            elif 'available_templates' in result:
+                templates = result['available_templates']
+                print("Available templates:")
+                for template in templates:
+                    print(f"  {template['name']}: {template['description']}")
+            else:
+                print("Command completed successfully")
+                if 'run_id' in result:
+                    print(f"Run ID: {result['run_id']}")
+                if 'status' in result:
+                    print(f"Status: {result['status']}")
+        else:
+            print(f"Error: {result.get('error', 'Unknown error')}")
+            if 'help' in result:
+                print(result['help'])
+            sys.exit(1)
+    else:
+        # Default behavior - run demo
+        print("MetaPython v0.4.0 - Phase 6: Cloud-ready orchestration and rich reporting")
+        print("=" * 80)
+        
+        try:
+            # Run a quick demo
+            print("Running unified meta-analysis demo...")
+            demo_result = run_unified_demo()
+            
+            if demo_result['success']:
+                print("\n✓ Demo completed successfully!")
+                print(f"Pooled effect: {demo_result['pooled_effect']:.3f}")
+                print(f"I² heterogeneity: {demo_result['heterogeneity']:.1f}%")
+                
+                # Show Phase 6 capabilities
+                print("\nPhase 6 Features Available:")
+                cli = MetaCLI()
+                backends = cli.list_available_backends()
+                print(f"  • Execution backends: {', '.join(backends['backends'])}")
+                print(f"  • Artifact stores: {', '.join(backends['artifact_stores'])}")
+                
+                templates = cli.list_report_templates()
+                print(f"  • Report templates: {', '.join([t['name'] for t in templates])}")
+                
+                print("\nUse 'python metapython.py help' for CLI usage")
+            else:
+                print(f"✗ Demo failed: {demo_result.get('error', 'Unknown error')}")
+                
+        except Exception as e:
+            print(f"✗ Error running demo: {e}")
+            print("\nThis may be due to missing optional dependencies.")
+            print("Core functionality is still available.")

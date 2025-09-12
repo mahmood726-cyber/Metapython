@@ -1,0 +1,6 @@
+# Test configuration for Phase 6 functionality
+type: meta_analysis
+data_file: test_data.csv
+effect_col: effect
+se_col: se
+label_col: study
