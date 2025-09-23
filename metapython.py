@@ -1,3 +1,16 @@
+# ===================================================================
+# STRICT ENVIRONMENT CONFIGURATION FOR MINIMAL ENVIRONMENTS
+# Must be at the very top before any imports to prevent PyTensor compilation
+# in Codespaces, CI systems, containers, or static libpython environments
+# ===================================================================
+
+import os
+
+# CRITICAL: Set PyTensor configuration before any imports to prevent C compilation
+# This prevents long compilation times and linking errors in minimal environments
+if 'PYTENSOR_FLAGS' not in os.environ:
+    os.environ['PYTENSOR_FLAGS'] = "device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
+
 """
 PyMeta-CBAMM Unified Suite v0.4 - Complete Meta-Analysis Platform with Phase 4 Extensions
 =========================================================================================
@@ -18,33 +31,42 @@ Phase 4 Extensions:
 - CLI and pipeline automation (meta_cli, meta_pipeline.yaml)
 - Performance optimizations (Numba hot paths, memory-efficient iterators)
 
-Runtime Robustness for Minimal Environments:
-- Configures PyTensor for minimal compilation overhead (important for Codespaces/static libpython)
-- Throttles spaCy model warnings to prevent spam in containerized environments
-- Graceful degradation when advanced dependencies are unavailable
+ROBUSTNESS FOR MINIMAL ENVIRONMENTS:
+=====================================
 
-CLI Usage with Environment Variables:
-For minimal environments or to suppress PyTensor compilation, set:
+This library is designed to work robustly in minimal environments such as:
+- GitHub Codespaces with limited compilation capabilities
+- CI/CD systems with static libpython
+- Docker containers without development tools
+- Jupyter notebooks in cloud environments
+
+Key robustness features:
+1. PYTENSOR_FLAGS enforced at the very top to prevent compilation overhead
+2. Throttled warning system - each missing dependency logs only once per run
+3. Graceful degradation - core functionality works with minimal dependencies
+4. Enhanced error handling for PyMC/PyTensor initialization failures
+
+USAGE:
+======
+
+Basic usage (minimal dependencies):
+```python
+import metapython
+# Core meta-analysis functions work with just numpy, pandas, scipy, matplotlib
+```
+
+For minimal environments, optionally set environment variable:
+```bash
 export PYTENSOR_FLAGS="device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
+python your_script.py
+```
 
-Then run: python metapython.py
+See README.md for complete installation and usage instructions.
 
 Author: PyMeta-CBAMM Development Team
 License: MIT
 Version: 0.4.0
 """
-
-# ===================================================================
-# MINIMAL ENVIRONMENT CONFIGURATION
-# Configure PyTensor flags before any imports to suppress C compilation
-# in minimal environments like Codespaces, containers, or static libpython
-# ===================================================================
-
-import os
-# Set PyTensor configuration to minimize compilation overhead
-# This must be done before any PyMC/PyTensor imports
-if 'PYTENSOR_FLAGS' not in os.environ:
-    os.environ['PYTENSOR_FLAGS'] = "device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
 
 import numpy as np
 import pandas as pd
@@ -71,7 +93,8 @@ logger = logging.getLogger(__name__)
 # Minimal environments may lack advanced dependencies - graceful degradation
 # ===================================================================
 
-# PyMC/PyTensor with enhanced error handling for minimal environments
+# PyMC/PyTensor with ENHANCED error handling for minimal environments
+# This is critical for Codespaces/CI where PyTensor compilation may fail
 try:
     import pymc as pm
     import arviz as az
@@ -81,9 +104,10 @@ except ImportError:
     HAS_PYMC = False
     logger.info("PyMC/PyTensor not available - Bayesian methods disabled")
 except Exception as e:
-    # Catch any PyTensor compilation or runtime errors gracefully
+    # Catch any PyTensor compilation, linking, or runtime errors gracefully
+    # Common in static libpython environments or systems without dev tools
     HAS_PYMC = False
-    logger.info("PyMC/PyTensor initialization failed - Bayesian methods disabled")
+    logger.info(f"PyMC/PyTensor initialization failed ({type(e).__name__}) - Bayesian methods disabled")
 
 try:
     import statsmodels.api as sm
@@ -4667,7 +4691,12 @@ def run_dose_response(meta) -> Dict[str, Any]:
     }
 
 def run_bayesian(meta) -> Dict[str, Any]:
-    """Run Bayesian methods"""
+    """
+    Run Bayesian methods with robust fallback for minimal environments.
+    
+    Gracefully handles PyMC/PyTensor unavailability and provides meaningful
+    fallback information for environments where Bayesian analysis cannot run.
+    """
     print_subsection("9. BAYESIAN METHODS", "-")
     
     results = {}
@@ -4680,17 +4709,24 @@ def run_bayesian(meta) -> Dict[str, Any]:
                 results = {
                     'posterior_mean': bayes_results['posterior_mean'],
                     'posterior_sd': bayes_results['posterior_sd'],
-                    'success': True
+                    'success': True,
+                    'method': 'bayesian_stacking'
                 }
             else:
                 print("Bayesian analysis failed or unavailable")
-                results['success'] = False
+                results = {'success': False, 'reason': 'Bayesian analysis failed internally'}
         except Exception as e:
             print(f"Bayesian analysis failed: {e}")
-            results = {'success': False, 'error': str(e)}
+            results = {'success': False, 'error': str(e), 'error_type': type(e).__name__}
     else:
-        print("PyMC not available - Bayesian methods disabled")
-        results = {'success': False, 'reason': 'PyMC not available'}
+        print("PyMC not available - falling back to frequentist confidence intervals")
+        print("For Bayesian analysis, install PyMC: pip install pymc")
+        results = {
+            'success': False, 
+            'reason': 'PyMC not available',
+            'fallback': 'Use frequentist random-effects confidence intervals',
+            'install_suggestion': 'pip install pymc arviz'
+        }
     
     return results
 
