@@ -1,0 +1,36 @@
+# Include documentation
+include README.md
+include LICENSE
+include IMPROVEMENTS_SUMMARY.md
+include ADVANCED_METHODS_GUIDE.md
+include PHASE4_CHANGELOG.md
+
+# Include requirements files
+include requirements.txt
+include requirements-full.txt
+include requirements-dev.txt
+
+# Include configuration files
+include setup.py
+include pyproject.toml
+
+# Include examples
+recursive-include examples *.py *.ipynb *.md
+
+# Include tests
+recursive-include tests *.py
+
+# Include benchmarks
+recursive-include benchmarks *.py
+
+# Exclude compiled Python files
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.so
+global-exclude .DS_Store
+
+# Exclude development artifacts
+exclude .gitignore
+exclude .github
+prune .github
+prune docs/_build
