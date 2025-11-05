@@ -353,4 +353,4 @@ Combines best practices from:
 
 ---
 
-**Version 0.4.1** - Production-ready with comprehensive optimizations and security features
+**Version 0.5.0** - Production-ready with cutting-edge journal methods, comprehensive optimizations and security features
