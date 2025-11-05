@@ -45,9 +45,12 @@ venv.bak/
 
 # Output files
 *.png
-*.txt
 *.pdf
 *.svg
+# Ignore output text files but not requirements
+output*.txt
+results*.txt
+test*.txt
 
 # Test files
 test_minimal_env.py

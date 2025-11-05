@@ -1,0 +1,87 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  check-frontend:
+    name: Check Frontend Requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for frontend files
+        id: check-frontend
+        run: |
+          if [ -f "package.json" ] || [ -d "frontend" ] || [ -d "web" ]; then
+            echo "has_frontend=true" >> $GITHUB_OUTPUT
+            echo "Frontend files detected"
+          else
+            echo "has_frontend=false" >> $GITHUB_OUTPUT
+            echo "No frontend files detected - MetaPython is a Python/R package"
+          fi
+
+      - name: Report Status
+        run: |
+          echo "MetaPython is a backend Python/R statistical analysis package"
+          echo "No frontend dependencies required for this project"
+          echo "✅ Check completed successfully"
+
+  # Placeholder jobs for future frontend development
+  setup:
+    name: Setup and Lint
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
+
+  bundle-size:
+    name: Bundle Size Analysis
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
+
+  lighthouse:
+    name: Lighthouse Performance
+    runs-on: ubuntu-latest
+    if: false  # Disabled until frontend is added
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "Frontend not yet implemented"
