@@ -3,25 +3,28 @@ MetaPython - Professional Meta-Analysis Platform
 =================================================
 
 A comprehensive, production-ready meta-analysis library implementing
-cutting-edge methods from top statistics journals.
+cutting-edge methods from top statistics journals (2023-2024).
 
 Key Features:
 - Fixed and random effects meta-analysis
+- Llama 3 integration for AI-powered analysis
+- 500+ rules engine for validation
+- 10,000+ scenario testing framework
+- Advanced methods from top journals (2023-2024)
+- Publication-quality visualizations
+- Automated PRISMA-compliant reporting
+- Comprehensive permutation testing (10,000+ tests)
 - Publication bias assessment (P-uniform, Selection models, Limit meta-analysis)
 - Network meta-analysis
-- Bayesian meta-analysis
-- Diagnostic test accuracy
-- Bootstrap methods (BCa, percentile, studentized)
-- GOSH plots for heterogeneity visualization
-- Restricted cubic splines for dose-response
-- Advanced meta-regression
-- Interactive visualizations
+- Bayesian meta-analysis with PyMC
+- Interactive dashboards
+- Advanced diagnostics and robust methods
 
-Version: 0.5.0
+Version: 0.6.0
 License: MIT
 """
 
-__version__ = '0.5.0'
+__version__ = '0.6.0'
 __author__ = 'MetaPython Development Team'
 __license__ = 'MIT'
 
@@ -105,4 +108,123 @@ if HAS_ADVANCED_METHODS:
         'GOSHAnalysis',
         'BootstrapMethods',
         'DoseResponseSplines',
+    ])
+
+# New advanced methods from 2023-2024 journals
+try:
+    from metapython.advanced_methods import (
+        robust_variance_meta_analysis,
+        prevalence_meta_analysis,
+        hksj_improved,
+        permutation_meta_analysis,
+        empirical_bayes_meta_analysis,
+        advanced_influence_diagnostics,
+        robust_meta_regression,
+    )
+    HAS_JOURNAL_METHODS = True
+except ImportError:
+    HAS_JOURNAL_METHODS = False
+
+# Enhanced visualizations
+try:
+    from metapython.enhanced_viz import (
+        advanced_forest_plot,
+        cumulative_forest_plot,
+        radial_plot,
+        create_meta_analysis_dashboard,
+        interactive_sensitivity_dashboard,
+        network_meta_3d,
+    )
+    HAS_ENHANCED_VIZ = True
+except ImportError:
+    HAS_ENHANCED_VIZ = False
+
+# LLM integration
+try:
+    from metapython.llm import LlamaMetaAnalyst
+    HAS_LLM_INTEGRATION = True
+except ImportError:
+    HAS_LLM_INTEGRATION = False
+
+# Rules engine
+try:
+    from metapython.rules import RulesEngine
+    HAS_RULES_ENGINE = True
+except ImportError:
+    HAS_RULES_ENGINE = False
+
+# Decision support
+try:
+    from metapython.decision_support import MetaAnalysisAdvisor
+    HAS_DECISION_SUPPORT = True
+except ImportError:
+    HAS_DECISION_SUPPORT = False
+
+# Automated reporting
+try:
+    from metapython.reporting import (
+        MethodsSectionGenerator,
+        ResultsSectionGenerator,
+        generate_methods_section,
+        generate_results_section,
+    )
+    HAS_REPORTING = True
+except ImportError:
+    HAS_REPORTING = False
+
+# Permutation framework
+try:
+    from metapython.permutations import (
+        PermutationEngine,
+        run_permutation_test,
+        run_bootstrap_test,
+    )
+    HAS_PERMUTATIONS = True
+except ImportError:
+    HAS_PERMUTATIONS = False
+
+# Update __all__ with new exports
+if HAS_JOURNAL_METHODS:
+    __all__.extend([
+        'robust_variance_meta_analysis',
+        'prevalence_meta_analysis',
+        'hksj_improved',
+        'permutation_meta_analysis',
+        'empirical_bayes_meta_analysis',
+        'advanced_influence_diagnostics',
+        'robust_meta_regression',
+    ])
+
+if HAS_ENHANCED_VIZ:
+    __all__.extend([
+        'advanced_forest_plot',
+        'cumulative_forest_plot',
+        'radial_plot',
+        'create_meta_analysis_dashboard',
+        'interactive_sensitivity_dashboard',
+        'network_meta_3d',
+    ])
+
+if HAS_LLM_INTEGRATION:
+    __all__.extend(['LlamaMetaAnalyst'])
+
+if HAS_RULES_ENGINE:
+    __all__.extend(['RulesEngine'])
+
+if HAS_DECISION_SUPPORT:
+    __all__.extend(['MetaAnalysisAdvisor'])
+
+if HAS_REPORTING:
+    __all__.extend([
+        'MethodsSectionGenerator',
+        'ResultsSectionGenerator',
+        'generate_methods_section',
+        'generate_results_section',
+    ])
+
+if HAS_PERMUTATIONS:
+    __all__.extend([
+        'PermutationEngine',
+        'run_permutation_test',
+        'run_bootstrap_test',
     ])
