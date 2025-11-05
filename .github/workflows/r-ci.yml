@@ -126,6 +126,11 @@ jobs:
           r-version: 'release'
           use-public-rspm: true
 
+      - name: Install system dependencies for rpy2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y r-base-dev python3-dev
+
       - name: Install R packages
         run: |
           R -e "install.packages(c('metafor', 'meta'), repos='https://cloud.r-project.org/')"
