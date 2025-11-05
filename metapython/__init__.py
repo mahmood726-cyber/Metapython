@@ -19,12 +19,17 @@ Key Features:
 - Bayesian meta-analysis with PyMC
 - Interactive dashboards
 - Advanced diagnostics and robust methods
+- R/Shiny integration (8 pre-configured apps)
+- Machine learning predictions
+- FastAPI REST API with WebSocket
+- React modern web interface
+- Grafana real-time dashboards
 
-Version: 0.6.0
+Version: 0.7.0
 License: MIT
 """
 
-__version__ = '0.6.0'
+__version__ = '0.7.0'
 __author__ = 'MetaPython Development Team'
 __license__ = 'MIT'
 
