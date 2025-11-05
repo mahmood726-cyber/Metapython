@@ -25,6 +25,9 @@ from metapython.publication_bias.selection_models import VeveaHedgesSelection
 from metapython.ml.heterogeneity_prediction import HeterogeneityPredictor
 from metapython.ml.publication_bias_ml import PublicationBiasML
 
+# Import plotting router
+from plotting_endpoints import router as plotting_router
+
 # Initialize FastAPI app
 app = FastAPI(
     title="MetaPython API",
@@ -42,6 +45,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include plotting router
+app.include_router(plotting_router)
 
 # Prometheus metrics
 REQUEST_COUNT = Counter('metapython_requests_total', 'Total requests', ['method', 'endpoint'])

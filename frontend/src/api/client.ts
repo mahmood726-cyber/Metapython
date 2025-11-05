@@ -264,6 +264,122 @@ class APIClient {
   }
 
   // ============================================================================
+  // R-BASED PLOTTING (metafor/meta)
+  // ============================================================================
+
+  async generateForestPlotMetafor(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    show_weights?: boolean;
+    show_prediction_interval?: boolean;
+    title?: string;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string; format: string }> {
+    const response = await this.client.post('/api/plots/forest-metafor', data);
+    return response.data;
+  }
+
+  async generateForestPlotMeta(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    show_prediction_interval?: boolean;
+    layout?: 'JAMA' | 'RevMan' | 'meta';
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string; format: string; layout: string }> {
+    const response = await this.client.post('/api/plots/forest-meta', data);
+    return response.data;
+  }
+
+  async generateFunnelPlotMetafor(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    show_contours?: boolean;
+    trim_fill?: boolean;
+    egger_test?: boolean;
+    title?: string;
+    width?: number;
+    height?: number;
+  }): Promise<{
+    plot_type: string;
+    image: string;
+    egger_test?: any;
+    trim_fill?: any;
+  }> {
+    const response = await this.client.post('/api/plots/funnel-metafor', data);
+    return response.data;
+  }
+
+  async generateBaujatPlot(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    label_outliers?: boolean;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string }> {
+    const response = await this.client.post('/api/plots/baujat', data);
+    return response.data;
+  }
+
+  async generateRadialPlot(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string }> {
+    const response = await this.client.post('/api/plots/radial', data);
+    return response.data;
+  }
+
+  async generateGOSHPlot(data: {
+    effects: number[];
+    se: number[];
+    method?: string;
+    n_subsets?: number;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string; n_subsets: number }> {
+    const response = await this.client.post('/api/plots/gosh', data);
+    return response.data;
+  }
+
+  async generateCumulativePlot(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    order_by?: number[];
+    method?: string;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string }> {
+    const response = await this.client.post('/api/plots/cumulative', data);
+    return response.data;
+  }
+
+  async generateLeaveOneOutPlot(data: {
+    effects: number[];
+    se: number[];
+    study_labels?: string[];
+    method?: string;
+    width?: number;
+    height?: number;
+  }): Promise<{ plot_type: string; image: string }> {
+    const response = await this.client.post('/api/plots/leave-one-out', data);
+    return response.data;
+  }
+
+  // ============================================================================
   // JOBS & ASYNC OPERATIONS
   // ============================================================================
 
