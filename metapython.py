@@ -46,6 +46,14 @@ import os
 if 'PYTENSOR_FLAGS' not in os.environ:
     os.environ['PYTENSOR_FLAGS'] = "device=cpu,floatX=float32,optimizer=fast_compile,openmp=False,blas__ldflags="
 
+import datetime
+import logging
+import re
+import warnings
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Optional, Any, Union
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -53,18 +61,45 @@ import seaborn as sns
 from scipy import stats
 from scipy.stats import norm, chi2, t
 from scipy.optimize import minimize
-from typing import List, Dict, Tuple, Optional, Any, Union
-import logging
-import warnings
-from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
-import os
-import datetime
-import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ===================================================================
+# CONSTANTS
+# ===================================================================
+
+# Statistical thresholds
+DEFAULT_ALPHA = 0.05
+Z_CRITICAL_95 = 1.96  # Normal distribution critical value for 95% CI
+Z_CRITICAL_99 = 2.58  # Normal distribution critical value for 99% CI
+T_CRITICAL_DEFAULT_DF = 30  # Default degrees of freedom for t-distribution
+
+# Outlier detection
+OUTLIER_Z_THRESHOLD = 2.58  # 99% confidence threshold for outlier detection
+OUTLIER_P_THRESHOLD = 0.01  # P-value threshold for outlier detection
+
+# Sample size thresholds
+MIN_STUDIES_DEFAULT = 2
+MIN_STUDIES_FOR_GLMM = 3
+MIN_STUDIES_FOR_NETWORK = 5
+MIN_SAMPLE_SIZE_PER_ARM = 20
+MIN_EVENTS_FOR_PETO = 1
+
+# Numerical stability
+NUMERICAL_EPSILON = 1e-10  # Small value to prevent division by zero
+CONVERGENCE_TOLERANCE = 1e-6
+MAX_ITERATIONS_DEFAULT = 1000
+
+# Default values for missing data
+DEFAULT_EFFECT_SIZE = 0.0
+DEFAULT_SE = 0.2
+DEFAULT_SE_SMALL = 0.1
+DEFAULT_SE_MIN = 0.01
+
+# Clustering defaults
+DEFAULT_CLUSTER_CANDIDATES = [2, 3, 4]
 
 # ===================================================================
 # OPTIONAL DEPENDENCIES WITH GRACEFUL FALLBACK
@@ -138,17 +173,17 @@ except ImportError:
 
 _SPACY_MODEL_WARNING_SHOWN = False
 
-def get_spacy_model(model_name: str = "en_core_web_sm"):
+def get_spacy_model(model_name: str = "en_core_web_sm") -> Optional[Any]:
     """
     Load spaCy model with throttled warnings for minimal environments.
-    
+
     In containerized or minimal environments, spaCy models may not be installed.
-    This helper ensures the warning appears only once per run rather than 
+    This helper ensures the warning appears only once per run rather than
     spamming logs on every NLP operation.
-    
+
     Args:
         model_name: Name of the spaCy model to load
-        
+
     Returns:
         spacy.Language object if successful, None otherwise
     """
@@ -316,30 +351,30 @@ class MetaAnalysisResults:
 class UnifiedMetaConfig:
     """Unified configuration for all meta-analysis methods"""
     # Core settings
-    alpha: float = 0.05
+    alpha: float = DEFAULT_ALPHA
     tau2_method: str = 'REML'
     use_hksj: bool = False
     prediction_interval: bool = True
     bias_correction: bool = True
-    min_studies: int = 2
-    max_iterations: int = 1000
-    convergence_tolerance: float = 1e-6
-    
+    min_studies: int = MIN_STUDIES_DEFAULT
+    max_iterations: int = MAX_ITERATIONS_DEFAULT
+    convergence_tolerance: float = CONVERGENCE_TOLERANCE
+
     # CBAMM settings
     transport_truncation: float = 0.02
     conflict_k_candidates: List[int] = None
     missing_study_max: int = 5
     bayesian_chains: int = 2
     bayesian_draws: int = 1000
-    
+
     # Living MA settings
     pubmed_email: str = "researcher@example.com"
     pubmed_max_records: int = 200
     auto_update_threshold: int = 5
-    
-    def __post_init__(self):
+
+    def __post_init__(self) -> None:
         if self.conflict_k_candidates is None:
-            self.conflict_k_candidates = [2, 3, 4]
+            self.conflict_k_candidates = DEFAULT_CLUSTER_CANDIDATES
 
 class UnifiedMetaError(Exception):
     """Base exception for unified meta-analysis"""
@@ -406,19 +441,75 @@ def validate_inputs(func):
         return func(*bound_args.args, **bound_args.kwargs)
     return wrapper
 
-def safe_solve(A, b):
+def safe_solve(A: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Numerically stable matrix solving"""
     try:
         return np.linalg.solve(A, b)
     except np.linalg.LinAlgError:
         return np.linalg.lstsq(A, b, rcond=None)[0]
 
-def safe_matrix_inverse(A):
+def safe_matrix_inverse(A: np.ndarray) -> np.ndarray:
     """Numerically stable matrix inversion"""
     try:
         return np.linalg.inv(A)
     except np.linalg.LinAlgError:
         return np.linalg.pinv(A)
+
+def calculate_pooled_estimate(effects: np.ndarray,
+                              weights_or_variances: np.ndarray,
+                              use_variances: bool = False) -> Tuple[float, float]:
+    """
+    Calculate pooled effect and standard error from weights or variances.
+
+    This utility function consolidates duplicated pooled estimate calculations
+    throughout the codebase.
+
+    Args:
+        effects: Array of effect sizes
+        weights_or_variances: Array of weights or variances
+        use_variances: If True, weights_or_variances contains variances and will be converted to weights
+
+    Returns:
+        Tuple of (pooled_effect, pooled_se)
+    """
+    if use_variances:
+        weights = 1 / weights_or_variances
+    else:
+        weights = weights_or_variances
+
+    pooled_effect = np.sum(weights * effects) / np.sum(weights)
+    pooled_se = np.sqrt(1 / np.sum(weights))
+    return float(pooled_effect), float(pooled_se)
+
+def calculate_confidence_interval(effect: float,
+                                  se: float,
+                                  alpha: float = 0.05,
+                                  use_t: bool = False,
+                                  df: Optional[int] = None) -> Tuple[float, float]:
+    """
+    Calculate confidence interval for an effect estimate.
+
+    This utility function consolidates duplicated CI calculations
+    throughout the codebase.
+
+    Args:
+        effect: Point estimate
+        se: Standard error
+        alpha: Significance level (default 0.05 for 95% CI)
+        use_t: If True, use t-distribution instead of normal
+        df: Degrees of freedom (required if use_t=True)
+
+    Returns:
+        Tuple of (ci_low, ci_high)
+    """
+    if use_t and df is not None:
+        crit = t.ppf(1 - alpha/2, df)
+    else:
+        crit = norm.ppf(1 - alpha/2)
+
+    ci_low = effect - crit * se
+    ci_high = effect + crit * se
+    return float(ci_low), float(ci_high)
 
 # ===================================================================
 # ENHANCED TAU² ESTIMATORS
@@ -752,8 +843,8 @@ class ConflictDetection:
                 try:
                     explainer = shap.Explainer(model, X)
                     shap_values = explainer(X)
-                except:
-                    pass
+                except (ValueError, TypeError, AttributeError, RuntimeError) as e:
+                    logger.debug(f"SHAP analysis failed: {e}")
             
             return {
                 'model': model,
@@ -773,7 +864,7 @@ class ConflictDetection:
 class NLPExtractor:
     """NLP-based effect size extraction from text"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.nlp = None
         if HAS_SPACY:
             # Use throttled spaCy model loader to prevent warning spam
@@ -793,12 +884,13 @@ class NLPExtractor:
         try:
             nums = [float(n) for n in numbers if n and float(n) > 0]
             if len(nums) >= 2:
-                est = np.log(nums[0]) if nums[0] > 0 else 0.0
-                se = abs(np.log(nums[1]) - np.log(nums[0]))/1.96 if len(nums) > 1 else 0.1
+                est = np.log(nums[0]) if nums[0] > 0 else DEFAULT_EFFECT_SIZE
+                se = abs(np.log(nums[1]) - np.log(nums[0]))/Z_CRITICAL_95 if len(nums) > 1 else DEFAULT_SE_SMALL
             else:
-                est, se = 0.0, 0.2
-        except:
-            est, se = 0.0, 0.2
+                est, se = DEFAULT_EFFECT_SIZE, DEFAULT_SE
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.debug(f"Effect size extraction failed: {e}")
+            est, se = DEFAULT_EFFECT_SIZE, DEFAULT_SE
         
         return est, se
     
@@ -819,12 +911,12 @@ class NLPExtractor:
                         est = float(match.group(1))
                         lower = float(match.group(2))
                         upper = float(match.group(3))
-                        se = (np.log(upper) - np.log(lower)) / (2 * 1.96)
-                        return np.log(est), max(se, 0.01)
-                except:
+                        se = (np.log(upper) - np.log(lower)) / (2 * Z_CRITICAL_95)
+                        return np.log(est), max(se, DEFAULT_SE_MIN)
+                except (ValueError, TypeError, ZeroDivisionError, AttributeError):
                     continue
-        
-        return 0.0, 0.2
+
+        return DEFAULT_EFFECT_SIZE, DEFAULT_SE
     
     def enrich_with_effect_sizes(self, df: pd.DataFrame, text_col: str = 'abstract') -> pd.DataFrame:
         """Apply extraction to dataframe of abstracts"""
@@ -841,12 +933,12 @@ class NLPExtractor:
 class OutcomeClassifier:
     """ML-based outcome classification"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.vectorizer = None
         self.classifier = None
         self._train_classifier()
     
-    def _train_classifier(self):
+    def _train_classifier(self) -> None:
         """Train outcome classifier with expanded training data"""
         if not HAS_SKLEARN:
             return
@@ -882,11 +974,12 @@ class OutcomeClassifier:
         """Classify outcome type from text"""
         if not self.classifier or not self.vectorizer:
             return "unknown"
-        
+
         try:
             X_new = self.vectorizer.transform([text])
             return self.classifier.predict(X_new)[0]
-        except:
+        except (ValueError, AttributeError, IndexError) as e:
+            logger.debug(f"Outcome classification failed: {e}")
             return "unknown"
     
     def enrich_with_outcomes(self, df: pd.DataFrame, text_col: str = 'abstract') -> pd.DataFrame:
@@ -2828,18 +2921,18 @@ class EnhancedDiagnosticTestAccuracy:
             try:
                 if HAS_STATSMODELS:
                     log_odds = np.log((sens / (1 - sens)) / (fpr / (1 - fpr)))
-                    model = sm.WLS(log_odds, sm.add_constant(np.log(fpr / (1 - fpr))), 
+                    model = sm.WLS(log_odds, sm.add_constant(np.log(fpr / (1 - fpr))),
                                   weights=weights).fit()
-                    
+
                     # Predict summary curve
                     log_fpr_smooth = np.log(x_smooth / (1 - x_smooth + 1e-10))
                     log_odds_pred = model.params[0] + model.params[1] * log_fpr_smooth
                     sens_smooth = np.exp(log_odds_pred) / (1 + np.exp(log_odds_pred))
-                    
-                    ax.plot(x_smooth, sens_smooth, 'r-', linewidth=3, 
+
+                    ax.plot(x_smooth, sens_smooth, 'r-', linewidth=3,
                            label='Summary ROC curve', alpha=0.8)
-            except:
-                pass
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+                logger.debug(f"HSROC summary curve fitting failed: {e}")
         
         # AUC reference lines
         ax.axhline(0.5, color='gray', linestyle=':', alpha=0.5)
@@ -5021,7 +5114,7 @@ if __name__ == '__main__':
 class MetaCLI:
     """Command-line interface and pipeline runner for meta-analysis workflows"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.config_file = None
         self.pipeline_file = None
         self.output_dir = "meta_output"
