@@ -1,0 +1,340 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run integration tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  # ============================================================================
+  # Full Stack Integration Test
+  # ============================================================================
+  full-stack:
+    name: Full Stack Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      # PostgreSQL for database tests
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: metapython_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      # Redis for caching tests
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # Setup R
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+
+      # Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # Install system dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev liblapack-dev gfortran
+
+      # Install R packages
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c("metafor", "meta"), repos="https://cloud.r-project.org")'
+
+      # Install Python dependencies
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements-full.txt
+          pip install pytest pytest-asyncio httpx
+
+      # Install Frontend dependencies
+      - name: Install Frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Build Frontend
+      - name: Build Frontend
+        working-directory: frontend
+        run: npm run build
+
+      # Start FastAPI backend
+      - name: Start Backend
+        run: |
+          cd api
+          python main.py &
+          sleep 10
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/metapython_test
+          REDIS_URL: redis://localhost:6379
+
+      # Run integration tests
+      - name: Run API integration tests
+        run: |
+          pytest tests/integration/ -v --tb=short
+        env:
+          API_URL: http://localhost:8000
+
+      # Test Python-R integration
+      - name: Test Python-R plotting integration
+        run: |
+          python -c "
+          from metapython.r_plotting import RMetaPlotter
+          import numpy as np
+
+          plotter = RMetaPlotter()
+          effects = np.array([0.5, 0.6, 0.4, 0.7])
+          variances = np.array([0.01, 0.0144, 0.0081, 0.0121])
+
+          print('Testing forest plot...')
+          plot = plotter.forest_plot_metafor(effects, variances)
+          print('✓ Forest plot generated')
+
+          print('Testing funnel plot...')
+          result = plotter.funnel_plot_metafor(effects, variances, trim_fill=True)
+          print('✓ Funnel plot generated')
+          print(f'  Egger p-value: {result.get(\"egger_test\", {}).get(\"p_value\", \"N/A\")}')
+          "
+
+      # Test frontend API calls
+      - name: Test Frontend-Backend integration
+        run: |
+          curl -X POST http://localhost:8000/api/meta-analysis/run \
+            -H "Content-Type: application/json" \
+            -d '{
+              "studies": [
+                {"id": "1", "label": "Study 1", "effect": 0.5, "se": 0.1, "n": 100},
+                {"id": "2", "label": "Study 2", "effect": 0.6, "se": 0.12, "n": 150}
+              ],
+              "method": "random"
+            }'
+
+      # Health checks
+      - name: Health checks
+        run: |
+          curl -f http://localhost:8000/health || exit 1
+          curl -f http://localhost:8000/metrics || exit 1
+
+  # ============================================================================
+  # End-to-End Workflow Test
+  # ============================================================================
+  e2e-workflow:
+    name: E2E Workflow
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          Rscript -e 'install.packages(c("metafor", "meta"), repos="https://cloud.r-project.org")'
+
+      - name: Complete meta-analysis workflow
+        run: |
+          python -c "
+          import numpy as np
+          from metapython.core.meta_analysis import MetaAnalysis
+          from metapython.r_plotting import create_forest_plot, create_funnel_plot
+
+          # Step 1: Prepare data
+          effects = np.array([0.5, 0.6, 0.4, 0.7, 0.55])
+          ses = np.array([0.1, 0.12, 0.09, 0.11, 0.10])
+
+          print('Step 1: Data prepared')
+
+          # Step 2: Run meta-analysis
+          ma = MetaAnalysis(method='random')
+          result = ma.fit(effects, ses**2)
+
+          print(f'Step 2: Meta-analysis complete')
+          print(f'  Pooled effect: {result.effect:.3f}')
+          print(f'  I²: {result.I2:.1f}%')
+
+          # Step 3: Generate forest plot
+          forest = create_forest_plot(effects, ses, method='REML')
+          print('Step 3: Forest plot generated')
+
+          # Step 4: Generate funnel plot with tests
+          funnel = create_funnel_plot(
+              effects, ses,
+              trim_fill=True,
+              egger_test=True
+          )
+          print('Step 4: Funnel plot generated')
+
+          # Step 5: Check publication bias
+          egger_p = funnel.get('egger_test', {}).get('p_value')
+          if egger_p:
+              print(f'  Egger test p-value: {egger_p:.4f}')
+              if egger_p < 0.05:
+                  print('  ⚠ Publication bias detected')
+              else:
+                  print('  ✓ No publication bias detected')
+
+          print('\\n✓ Complete workflow successful!')
+          "
+
+  # ============================================================================
+  # Performance Integration Test
+  # ============================================================================
+  performance:
+    name: Performance Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest-benchmark
+          Rscript -e 'install.packages(c("metafor", "meta"), repos="https://cloud.r-project.org")'
+
+      - name: Run performance benchmarks
+        run: |
+          python -c "
+          import time
+          import numpy as np
+          from metapython.core.meta_analysis import MetaAnalysis
+          from metapython.r_plotting import RMetaPlotter
+
+          # Benchmark Python meta-analysis
+          effects = np.random.randn(100) * 0.2 + 0.5
+          ses = np.random.uniform(0.05, 0.15, 100)
+
+          start = time.time()
+          ma = MetaAnalysis(method='random')
+          result = ma.fit(effects, ses**2)
+          python_time = time.time() - start
+
+          print(f'Python meta-analysis: {python_time:.3f}s')
+
+          # Benchmark R plotting
+          plotter = RMetaPlotter()
+          effects_small = effects[:20]
+          variances_small = ses[:20]**2
+
+          start = time.time()
+          plot = plotter.forest_plot_metafor(effects_small, variances_small)
+          r_plot_time = time.time() - start
+
+          print(f'R forest plot: {r_plot_time:.3f}s')
+
+          # Performance thresholds
+          assert python_time < 1.0, 'Python meta-analysis too slow'
+          assert r_plot_time < 5.0, 'R plotting too slow'
+
+          print('\\n✓ Performance benchmarks passed')
+          "
+
+  # ============================================================================
+  # Data Pipeline Integration
+  # ============================================================================
+  data-pipeline:
+    name: Data Pipeline Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pandas openpyxl
+
+      - name: Test data import pipeline
+        run: |
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from metapython.core.meta_analysis import MetaAnalysis
+
+          # Create test dataset
+          df = pd.DataFrame({
+              'study': [f'Study {i}' for i in range(1, 11)],
+              'effect': np.random.randn(10) * 0.2 + 0.5,
+              'se': np.random.uniform(0.05, 0.15, 10),
+              'n': np.random.randint(50, 200, 10)
+          })
+
+          # Save to CSV
+          df.to_csv('test_data.csv', index=False)
+          print('✓ Created test CSV')
+
+          # Load and analyze
+          df_loaded = pd.read_csv('test_data.csv')
+          ma = MetaAnalysis(method='random')
+          result = ma.fit(df_loaded['effect'].values, df_loaded['se'].values**2)
+
+          print(f'✓ Analyzed {len(df_loaded)} studies')
+          print(f'  Pooled effect: {result.effect:.3f}')
+
+          print('\\n✓ Data pipeline integration successful')
+          "
