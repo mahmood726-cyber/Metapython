@@ -1,9 +1,10 @@
-# MetaPython - Production-Ready Meta-Analysis Library
+# MetaPython - State-of-the-Art Meta-Analysis Library
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-0.5.0-brightgreen)](https://github.com/mahmood726-cyber/Metapython)
 
-A comprehensive, production-ready Python library for meta-analysis combining state-of-the-art methods with extensive diagnostics, visualizations, and automation capabilities.
+A comprehensive, production-ready Python library for meta-analysis combining **cutting-edge methods from top statistics journals** (JASA, Statistics in Medicine, BMJ, Research Synthesis Methods) with extensive diagnostics, visualizations, and automation capabilities.
 
 ## ✨ Key Features
 
@@ -13,9 +14,17 @@ A comprehensive, production-ready Python library for meta-analysis combining sta
 - **Prediction Intervals** for future studies
 - **Subgroup Analysis** with between-group heterogeneity tests
 
+### 🆕 Cutting-Edge Methods from Statistics Journals
+- **P-uniform & P-uniform\***: Publication bias correction (van Assen et al., *Psychological Methods*, 2015)
+- **3-Parameter Selection Models**: Differential publication probabilities (Vevea & Hedges, *Psychometrika*, 1995)
+- **Limit Meta-Analysis**: Extrapolation to infinite precision (Rücker et al., *Statistics in Medicine*, 2011)
+- **GOSH Plots**: Graphical display of heterogeneity (Olkin et al., *Research Synthesis Methods*, 2012)
+- **Bootstrap Methods**: BCa confidence intervals (Davison & Hinkley, 1997)
+- **Restricted Cubic Splines**: Non-linear dose-response (Orsini et al., *Stata Journal*, 2006)
+
 ### Advanced Methods
-- **Publication Bias Detection**: Egger's test, Begg's test, trim-and-fill, p-curve, PET-PEESE, weight function models
-- **Sensitivity Analysis**: Leave-one-out (with 50-100x speedup), influence diagnostics, multiverse analysis
+- **Publication Bias Detection**: Egger, Begg, trim-and-fill, p-curve, PET-PEESE, weight functions, p-uniform, selection models
+- **Sensitivity Analysis**: Leave-one-out (50-100x speedup), GOSH, influence diagnostics, bootstrap
 - **Conflict Detection**: ML-based clustering to identify inconsistent evidence
 - **Transport Weighting**: External validity assessment for target populations
 - **Network Meta-Analysis**: Consistency testing, node-splitting, ranking
