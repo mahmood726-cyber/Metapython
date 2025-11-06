@@ -1,0 +1,49 @@
+build_id,date,platform,python_version,total_tests,passed,failed,success,failure_reason
+1,2025-10-25,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+2,2025-10-25,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+3,2025-10-25,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+4,2025-10-25,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+5,2025-10-25,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+6,2025-10-25,macos-latest,3.11,73,73,0,TRUE,NA
+7,2025-10-26,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+8,2025-10-26,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+9,2025-10-26,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+10,2025-10-26,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+11,2025-10-26,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+12,2025-10-26,macos-latest,3.11,73,73,0,TRUE,NA
+13,2025-10-27,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+14,2025-10-27,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+15,2025-10-27,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+16,2025-10-27,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+17,2025-10-27,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+18,2025-10-27,macos-latest,3.11,73,73,0,TRUE,NA
+19,2025-10-28,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+20,2025-10-28,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+21,2025-10-28,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+22,2025-10-28,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+23,2025-10-28,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+24,2025-10-28,macos-latest,3.11,73,0,73,FALSE,Network timeout
+25,2025-10-29,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+26,2025-10-29,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+27,2025-10-29,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+28,2025-10-29,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+29,2025-10-29,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+30,2025-10-29,macos-latest,3.11,73,73,0,TRUE,NA
+31,2025-10-30,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+32,2025-10-30,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+33,2025-10-30,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+34,2025-10-30,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+35,2025-10-30,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+36,2025-10-30,macos-latest,3.11,73,73,0,TRUE,NA
+37,2025-10-31,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+38,2025-10-31,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+39,2025-10-31,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+40,2025-10-31,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+41,2025-10-31,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+42,2025-10-31,macos-latest,3.11,73,73,0,TRUE,NA
+43,2025-11-01,ubuntu-latest,3.9,73,0,73,FALSE,Missing system dependencies
+44,2025-11-01,ubuntu-latest,3.10,73,0,73,FALSE,Missing system dependencies
+45,2025-11-01,ubuntu-latest,3.11,73,0,73,FALSE,Missing system dependencies
+46,2025-11-01,ubuntu-latest,3.12,73,0,73,FALSE,Missing system dependencies
+47,2025-11-01,windows-latest,3.11,73,0,73,FALSE,NumPy installation failure
+48,2025-11-01,macos-latest,3.11,73,0,73,FALSE,Network timeout
