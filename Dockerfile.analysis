@@ -1,0 +1,48 @@
+# Dockerfile for reproducible statistical analysis
+# MetaPython CI/CD Optimization Study
+# Date: November 5, 2025
+
+FROM rocker/tidyverse:4.3.0
+
+# Metadata
+LABEL maintainer="mahmood726-cyber"
+LABEL description="Statistical analysis environment for MetaPython study"
+LABEL version="1.0"
+
+# Set working directory
+WORKDIR /analysis
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    libxml2-dev \
+    libpng-dev \
+    libjpeg-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install required R packages
+RUN R -e "install.packages(c( \
+    'tidyverse', \
+    'ggplot2', \
+    'dplyr', \
+    'tidyr', \
+    'readr', \
+    'effsize', \
+    'pwr', \
+    'lsr' \
+    ), repos='https://cloud.r-project.org/')"
+
+# Verify installations
+RUN R -e "library(tidyverse); library(effsize); library(pwr); library(lsr)"
+
+# Create results directory
+RUN mkdir -p /analysis/results/figures
+
+# Set default command
+CMD ["Rscript", "/analysis/scripts/run_all_analyses.R"]
+
+# Usage:
+# docker build -t metapython-analysis -f Dockerfile.analysis .
+# docker run -v $(pwd)/analysis:/analysis metapython-analysis

@@ -752,8 +752,8 @@ class ConflictDetection:
                 try:
                     explainer = shap.Explainer(model, X)
                     shap_values = explainer(X)
-                except:
-                    pass
+                except Exception as e:
+                    logging.debug(f"SHAP explainer failed: {e}")
             
             return {
                 'model': model,
@@ -821,7 +821,8 @@ class NLPExtractor:
                         upper = float(match.group(3))
                         se = (np.log(upper) - np.log(lower)) / (2 * 1.96)
                         return np.log(est), max(se, 0.01)
-                except:
+                except (ValueError, AttributeError, TypeError) as e:
+                    logging.debug(f"Effect size extraction failed: {e}")
                     continue
         
         return 0.0, 0.2
@@ -2697,12 +2698,13 @@ class UnifiedMetaAnalysis:
                     sim_effects.append(est)
                     ci_width = ci_high - ci_low
                     sim_ci_widths.append(ci_width)
-                    
+
                     # Coverage probability
                     covers = (ci_low <= true_effect <= ci_high)
                     sim_coverage.append(covers)
-                    
-                except Exception:
+
+                except Exception as e:
+                    logging.debug(f"Simulation iteration failed: {e}")
                     continue
             
             if sim_effects:
@@ -2835,11 +2837,11 @@ class EnhancedDiagnosticTestAccuracy:
                     log_fpr_smooth = np.log(x_smooth / (1 - x_smooth + 1e-10))
                     log_odds_pred = model.params[0] + model.params[1] * log_fpr_smooth
                     sens_smooth = np.exp(log_odds_pred) / (1 + np.exp(log_odds_pred))
-                    
-                    ax.plot(x_smooth, sens_smooth, 'r-', linewidth=3, 
+
+                    ax.plot(x_smooth, sens_smooth, 'r-', linewidth=3,
                            label='Summary ROC curve', alpha=0.8)
-            except:
-                pass
+            except (ValueError, AttributeError, IndexError) as e:
+                logging.debug(f"Summary ROC curve plotting failed: {e}")
         
         # AUC reference lines
         ax.axhline(0.5, color='gray', linestyle=':', alpha=0.5)

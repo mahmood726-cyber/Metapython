@@ -1,0 +1,39 @@
+# Lightweight testing dependencies for CI/CD
+# This file avoids heavy ML dependencies to speed up CI/CD pipelines
+
+# Core dependencies (from requirements.txt but version-pinned for faster installs)
+# All versions have pre-built wheels for Linux, macOS, and Windows
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.0
+matplotlib==3.8.4
+seaborn==0.13.2
+
+# R integration (optional - installed separately in R integration tests)
+# rpy2==3.5.16  # Commented out - not needed for core tests
+
+# API framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# Testing dependencies
+pytest>=7.4.0,<8.0.0
+pytest-cov>=4.1.0,<5.0.0
+pytest-asyncio>=0.21.0,<1.0.0
+pytest-mock>=3.11.0,<4.0.0
+
+# Code quality tools
+black==24.4.2
+isort==5.13.2
+flake8==7.0.0
+pylint==3.1.0
+mypy==1.10.0
+
+# Type stubs
+types-requests>=2.31.0
+pandas-stubs>=2.0.0
+
+# Security scanning
+bandit>=1.7.5,<2.0.0
+safety>=3.0.0,<4.0.0

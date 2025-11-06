@@ -1,0 +1,58 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  summary:
+    name: CI/CD Summary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Project Overview
+        run: |
+          echo "=================================================="
+          echo "MetaPython CI/CD Pipeline"
+          echo "=================================================="
+          echo ""
+          echo "Project Type: Python/R Statistical Analysis Package"
+          echo "Main Focus: Meta-analysis and Statistical Modeling"
+          echo ""
+          echo "Key Components:"
+          echo "  ✅ Python Backend (NumPy, Pandas, SciPy)"
+          echo "  ✅ R Integration (metafor, meta packages)"
+          echo "  ✅ FastAPI REST API"
+          echo "  ✅ Statistical Analysis Tools"
+          echo ""
+          echo "CI/CD Workflows:"
+          echo "  🐍 Python CI/CD - Code quality, testing, security"
+          echo "  📊 R Package CI/CD - R package testing, integration"
+          echo "  🌐 Frontend CI/CD - Placeholder (no frontend yet)"
+          echo ""
+          echo "=================================================="
+
+      - name: List Files
+        run: |
+          echo ""
+          echo "Repository Structure:"
+          ls -lah
+
+      - name: Check Dependencies
+        run: |
+          echo ""
+          echo "Dependency Files:"
+          ls -la requirements*.txt 2>/dev/null || echo "No requirements files found"
+
+      - name: Report Status
+        run: |
+          echo ""
+          echo "✅ CI/CD Pipeline Summary Complete"
+          echo ""
+          echo "View detailed results in:"
+          echo "  - Python CI/CD workflow"
+          echo "  - R Package CI/CD workflow"
