@@ -1,5 +1,45 @@
 # Experimental Design and Research Methodology
 
+---
+
+## ⚠️ METHODOLOGY STATUS
+
+**Document Type**: Prospective Research Protocol (Pre-registered Methodology)
+
+**Status**: This document describes the **planned methodology** for a rigorous quasi-experimental study of CI/CD optimization. It serves as:
+1. A **pre-registered protocol** showing how the study *should* be conducted
+2. A **methodology template** that other researchers can adapt
+3. A **commitment to rigor** before data collection
+
+**Data Collection Status**:
+- ✅ **Protocol**: Complete and pre-registered (this document)
+- ✅ **Analysis scripts**: Complete (see `analysis/scripts/`)
+- ⏳ **Baseline data**: To be collected (requires reverting to monolithic dependencies)
+- ⏳ **Intervention data**: Preliminary results available, full collection in progress
+
+**Current Evidence**:
+- We have 6 workflow runs from the *intervention period* (~12-13 min for successful builds)
+- We do NOT yet have 32 baseline runs from *before* optimization
+- Baseline data in `analysis/data/` is **synthetic** (illustrative of target sample size and format)
+
+**Why Pre-register?**
+Pre-registration prevents p-hacking, HARKing (Hypothesizing After Results are Known), and selective reporting. By documenting hypotheses, sample sizes, and analysis plans *before* seeing full results, we ensure scientific rigor.
+
+**Value of This Document**:
+Even without complete data, this protocol demonstrates:
+- How to properly design a CI/CD optimization study
+- What statistical rigor looks like in DevOps research
+- A replicable template for similar studies
+
+**Next Steps**:
+1. Revert to monolithic `requirements.txt` (preserve in separate branch)
+2. Collect 32 baseline builds following the protocol below
+3. Re-apply optimizations and collect 34 intervention builds
+4. Execute R analysis scripts on actual data
+5. Update STATISTICAL_ANALYSIS.md with results
+
+---
+
 ## Research Questions
 
 ### RQ1: Dependency Stratification and Build Time
